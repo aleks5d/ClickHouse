@@ -78,6 +78,7 @@ void registerAggregateFunctionSequenceNextNode(AggregateFunctionFactory &);
 void registerAggregateFunctionNothing(AggregateFunctionFactory &);
 void registerAggregateFunctionExponentialMovingAverage(AggregateFunctionFactory &);
 void registerAggregateFunctionExponentialSmoothingAlpha(AggregateFunctionFactory &);
+void registerAggregateFunctionExponentialSmoothingAlphaFillGaps(AggregateFunctionFactory &);
 void registerAggregateFunctionSparkbar(AggregateFunctionFactory &);
 void registerAggregateFunctionIntervalLengthSum(AggregateFunctionFactory &);
 void registerAggregateFunctionAnalysisOfVariance(AggregateFunctionFactory &);
@@ -173,6 +174,7 @@ void registerAggregateFunctions()
         registerAggregateFunctionIntervalLengthSum(factory);
         registerAggregateFunctionExponentialMovingAverage(factory);
         registerAggregateFunctionExponentialSmoothingAlpha(factory);
+        registerAggregateFunctionExponentialSmoothingAlphaFillGaps(factory);
         registerAggregateFunctionSparkbar(factory);
         registerAggregateFunctionAnalysisOfVariance(factory);
         registerAggregateFunctionKolmogorovSmirnovTest(factory);

@@ -2,7 +2,12 @@
 
 #include <cmath>
 #include <limits>
+#include <stdexcept>
 
+namespace ErrorCodes
+{
+    extern const int DATA_NOT_ORDERED_BY_TIMESTAMP;
+}
 
 namespace DB
 {
@@ -257,8 +262,8 @@ struct ExponentiallySmoothedAlphaWithTime
         return ExponentiallySmoothedAlphaWithTime(value * scale(current_time - timestamp, alpha), current_time, first_value);
     }
 
-    /// Merge two counters.
-    /// TODO: add docs aleks5d 
+    /// Merge two counters. It is done by moving to the same point of reference and summing the values.
+    /// First value choose by minimum timestamp. If them are equal - we assume that they are both initial and take their sum.
     static ExponentiallySmoothedAlphaWithTime merge(const ExponentiallySmoothedAlphaWithTime & a, const ExponentiallySmoothedAlphaWithTime & b,
                                                             double alpha)
     {
@@ -309,6 +314,171 @@ struct ExponentiallySmoothedAlphaWithTime
     /// Compare two counters (by moving to the same point of reference and comparing sums).
     /// You can store the counters in container and sort it without changing the stored values over time.
     bool less(const ExponentiallySmoothedAlphaWithTime & other, double alpha) const
+    {
+        unsigned long long int max_time = std::max(timestamp, other.timestamp);
+        return get(max_time, alpha) < other.get(max_time, alpha);
+    }
+};
+
+
+struct ExponentiallySmoothedAlphaWithTimeFillGaps
+{
+    /// The sum. It contains the last value and all previous values scaled accordingly to the difference of their time to the reference time.
+    /// Older values are summed with exponentially smaller coefficients.
+
+    double value = 0;
+
+    /// Current timestamp. Using in calculating exponential smoothing.
+
+    unsigned long long int timestamp = 0;
+
+    /// first applied value. Using to avoid multiplying first value on alpha. 
+
+    struct {
+        double value = 0;
+        unsigned long long int timestamp = 0;
+        bool was = false;
+    } first_value;
+
+    ExponentiallySmoothedAlphaWithTimeFillGaps() = default;
+
+    template<typename first_value_type>
+    ExponentiallySmoothedAlphaWithTimeFillGaps(double current_value, long long int current_time, first_value_type first_value_)
+        : value(current_value), timestamp(current_time), first_value(first_value_)
+    {
+    }
+
+    ExponentiallySmoothedAlphaWithTimeFillGaps(double current_value, long long int current_time, double first_value_, unsigned long long int first_timestamp_)
+        : value(current_value), timestamp(current_time)
+    {
+        first_value.value = first_value_;
+        first_value.timestamp = first_timestamp_;
+        first_value.was = true;
+    }
+
+    /// How much value decays after time_passed.
+    static double scale(unsigned long long int time_passed, double alpha)
+    {
+        /// Using binary power because of low precision of pow().
+        double result = 1;
+        alpha = 1 - alpha;
+        while (time_passed)
+        {
+            if (time_passed & 1)
+            {
+                result *= alpha;
+            }
+            time_passed >>= 1;
+            alpha *= alpha;
+        }
+        return result;
+    }
+
+    /// Obtain the same counter in another point of reference.
+    /// Works only for current_time >= timestamp.
+    ExponentiallySmoothedAlphaWithTimeFillGaps remap(unsigned long long int current_time, double alpha) const
+    {
+        return ExponentiallySmoothedAlphaWithTimeFillGaps(value * scale(current_time - timestamp, alpha), current_time, first_value);
+    }
+
+    /// Merge two counters. It is done by moving to the same point of reference and summing the values.
+    /// First value choose by minimum timestamp. If them are equal - we assume that they are both initial and take their sum.
+    static ExponentiallySmoothedAlphaWithTimeFillGaps merge(const ExponentiallySmoothedAlphaWithTimeFillGaps & a, const ExponentiallySmoothedAlphaWithTimeFillGaps & b,
+                                                            double alpha)
+    {
+        if (!a.first_value.was || !b.first_value.was)
+        {
+            return a.first_value.was ? a : b;
+        }
+
+        if (a.first_value.timestamp > b.timestamp)
+        {
+            return ExponentiallySmoothedAlphaWithTimeFillGaps(
+            b.get_without_fixing(a.first_value.timestamp - 1, alpha) * scale(a.timestamp - a.first_value.timestamp + 1, alpha) + a.value,
+            a.timestamp,
+            b.first_value);
+        }
+        else if (b.first_value.timestamp > a.timestamp)
+        {
+            return ExponentiallySmoothedAlphaWithTimeFillGaps(
+            a.get_without_fixing(b.first_value.timestamp - 1, alpha) * scale(b.timestamp - b.first_value.timestamp + 1, alpha) + b.value,
+            b.timestamp,
+            a.first_value);
+        }
+        else
+        {
+            throw std::invalid_argument("timestamps are not sorted");
+        }
+    }
+
+    void merge(const ExponentiallySmoothedAlphaWithTimeFillGaps & other, double alpha)
+    {
+        *this = merge(*this, other, alpha);
+    }
+
+    /// Add new value.
+    void add(double new_value, unsigned long long int new_time, double alpha)
+    {
+        merge(ExponentiallySmoothedAlphaWithTimeFillGaps(new_value * alpha, new_time, new_value, new_time), alpha);
+    }
+
+    /// Add predicted value.
+    void add_predict(double alpha)
+    {
+        add(get(alpha), timestamp + 1, alpha);
+    }
+
+    /// Get value at the given moment without fixing first value.
+    double get_without_fixing(unsigned long long int current_time, double alpha) const
+    {
+        // case of empty counter
+        if (!first_value.was)
+        {
+            return get(alpha);
+        }
+        auto copy_of_me = ExponentiallySmoothedAlphaWithTimeFillGaps(*this);
+        while (copy_of_me.timestamp < current_time)
+        {
+            copy_of_me.add_predict(alpha);
+        }
+        return copy_of_me.value;
+    }
+
+    /// Get value at current moment without fixing first value.
+    double get_without_fixing(double alpha) const
+    {
+        return get_without_fixing(timestamp, alpha);
+    }
+
+    /// Get first value fix at given moment.
+    double get_first_value_fix(unsigned long long int current_time, double alpha) const
+    {
+        return first_value.was
+            ? first_value.value * scale(current_time - first_value.timestamp + 1, alpha)
+            : 0;
+    }
+
+    /// Get first value fix at current moment.
+    double get_first_value_fix(double alpha) const
+    {
+        return get_first_value_fix(timestamp, alpha);
+    }
+
+    /// Get current value.
+    double get(double alpha) const
+    {
+        return get_without_fixing(alpha) + get_first_value_fix(alpha);
+    }
+
+    /// Get value at the given moment.
+    double get(unsigned long long int current_time, double alpha) const
+    {
+        return get_without_fixing(current_time, alpha) + get_first_value_fix(current_time, alpha);
+    }
+
+    /// Compare two counters (by moving to the same point of reference and comparing sums).
+    /// You can store the counters in container and sort it without changing the stored values over time.
+    bool less(const ExponentiallySmoothedAlphaWithTimeFillGaps & other, double alpha) const
     {
         unsigned long long int max_time = std::max(timestamp, other.timestamp);
         return get(max_time, alpha) < other.get(max_time, alpha);
