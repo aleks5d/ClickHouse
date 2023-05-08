@@ -131,7 +131,7 @@ struct ExponentiallySmoothedAlpha
 
     ExponentiallySmoothedAlpha() = default;
     
-    ExponentiallySmoothedAlpha(double current_value, long long int current_count, double first_value_)
+    ExponentiallySmoothedAlpha(double current_value, unsigned long long int current_count, double first_value_)
         : value(current_value), count(current_count), first_value(first_value_)
     {
     }
@@ -224,12 +224,12 @@ struct ExponentiallySmoothedAlphaWithTime
     ExponentiallySmoothedAlphaWithTime() = default;
 
     template<typename first_value_type>
-    ExponentiallySmoothedAlphaWithTime(double current_value, long long int current_time, first_value_type first_value_)
+    ExponentiallySmoothedAlphaWithTime(double current_value, unsigned long long int current_time, first_value_type first_value_)
         : value(current_value), timestamp(current_time), first_value(first_value_)
     {
     }
 
-    ExponentiallySmoothedAlphaWithTime(double current_value, long long int current_time, double first_value_, unsigned long long int first_timestamp_)
+    ExponentiallySmoothedAlphaWithTime(double current_value, unsigned long long int current_time, double first_value_, unsigned long long int first_timestamp_)
         : value(current_value), timestamp(current_time)
     {
         first_value.value = first_value_;
@@ -343,12 +343,12 @@ struct ExponentiallySmoothedAlphaWithTimeFillGaps
     ExponentiallySmoothedAlphaWithTimeFillGaps() = default;
 
     template<typename first_value_type>
-    ExponentiallySmoothedAlphaWithTimeFillGaps(double current_value, long long int current_time, first_value_type first_value_)
+    ExponentiallySmoothedAlphaWithTimeFillGaps(double current_value, unsigned long long int current_time, first_value_type first_value_)
         : value(current_value), timestamp(current_time), first_value(first_value_)
     {
     }
 
-    ExponentiallySmoothedAlphaWithTimeFillGaps(double current_value, long long int current_time, double first_value_, unsigned long long int first_timestamp_)
+    ExponentiallySmoothedAlphaWithTimeFillGaps(double current_value, unsigned long long int current_time, double first_value_, unsigned long long int first_timestamp_)
         : value(current_value), timestamp(current_time)
     {
         first_value.value = first_value_;
