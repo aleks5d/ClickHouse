@@ -127,10 +127,6 @@ public:
 class AggregateFunctionExponentialSmoothingAlphaFillGaps
     : public AggregateFunctionExponentialSmoothingAlpha<ExponentiallySmoothedAlphaWithTimeFillGaps, true>
 {
-private:
-    String name;
-    Float64 alpha;
-
 public:
     AggregateFunctionExponentialSmoothingAlphaFillGaps(const DataTypes & argument_types_, const Array & params)
         : AggregateFunctionExponentialSmoothingAlpha<ExponentiallySmoothedAlphaWithTimeFillGaps, true>(argument_types_, params)
@@ -146,7 +142,7 @@ public:
     {
         try
         {
-            this->data(place).merge(this->data(rhs), alpha);
+            this->data(place).merge(this->data(rhs), this->getAlpha());
         }
         catch (const std::invalid_argument & e)
         {
