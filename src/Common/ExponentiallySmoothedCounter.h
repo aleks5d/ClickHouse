@@ -654,7 +654,6 @@ struct Holt : DataHelper
         merge(Holt(new_value), alpha, beta);
     }
 
-
     /// Get predict of value at the given count.
     /// Works only with given count >= count.
     double get(uint64_t current_count, [[maybe_unused]] double alpha, [[maybe_unused]] double beta) const
