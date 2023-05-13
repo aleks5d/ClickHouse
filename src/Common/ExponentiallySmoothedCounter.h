@@ -1034,7 +1034,7 @@ struct HoltWithTimeFillGaps : DataHelper
     }
 };
 
-struct HoltWinters
+struct HoltWinters : DataHelper
 {
     double value = 0;
 
@@ -1045,12 +1045,12 @@ struct HoltWinters
     unsigned long long int count = 0;
 };
 
-struct HoltWintersWithTime
+struct HoltWintersWithTime : DataHelper
 {
 
 };
 
-struct HoltWintersWithTimeFillGaps
+struct HoltWintersWithTimeFillGaps : DataHelper
 {
 
 }
