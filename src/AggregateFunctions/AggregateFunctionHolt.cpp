@@ -118,6 +118,8 @@ public:
         else
         {
             writeBinary(this->data(place).count, buf);
+            writeBinary(this->data(place).first_value);
+            writeBinary(this->data(place).first_trend);
         }
     }
 
@@ -138,6 +140,8 @@ public:
         else
         {
             readBinary(this->data(place).count, buf);
+            readBinary(this->data(place).first_value, buf);
+            readBinary(this->data(place).first_trend, buf);
         }
     }
 
