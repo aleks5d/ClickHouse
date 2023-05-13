@@ -65,6 +65,9 @@ public:
         if (gamma > 1)
             throw Exception(ErrorCodes::ILLEGAL_VALUE_OF_ARGUMENT, "Aggregate function {} requires gamma not greater one, got {}",
                 getName(), gamma);
+        if (seasons_count == 0)
+            throw Exception(ErrorCodes::ILLEGAL_VALUE_OF_ARGUMENT, "Aggregate function {} requires seasons_count not equal 0",
+                getName());
     }
 
     String getName() const override
@@ -348,7 +351,7 @@ void registerAggregateFunctionHoltWintersAdditionFillGaps(AggregateFunctionFacto
                     "Second argument for aggregate function {} must have unsigned integer type, got {}",
                     name, argument_types[1]->getName());
             }
-            return std::make_shared<AggregateFunctionHoltWintersAdditionFillGaps<HoltWintersAdditionWithTimeFillGaps>>(argument_types, params);
+            return std::make_shared<AggregateFunctionHoltWintersAdditionFillGaps>(argument_types, params);
         });
 }
 
