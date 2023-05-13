@@ -23,9 +23,9 @@ namespace ErrorCodes
 /** See the comments in ExponentiallySmoothedCounter.h
   */
 template<typename HoltWintersAggregator, bool have_time_column>
-class AggregateFunctionHoltWinters
+class AggregateFunctionHoltWintersMultiply
     : public IAggregateFunctionDataHelper<HoltWintersAggregator,
-                AggregateFunctionHoltWinters<HoltWintersAggregator, have_time_column>>
+                AggregateFunctionHoltWintersMultiply<HoltWintersAggregator, have_time_column>>
 {
 private:
     String name;
@@ -36,8 +36,8 @@ private:
 
 
 public:
-    AggregateFunctionHoltWinters(const DataTypes & argument_types_, const Array & params)
-        : IAggregateFunctionDataHelper<HoltWintersAggregator, AggregateFunctionHoltWinters>(argument_types_, params, createResultType())
+    AggregateFunctionHoltWintersMultiply(const DataTypes & argument_types_, const Array & params)
+        : IAggregateFunctionDataHelper<HoltWintersAggregator, AggregateFunctionHoltWintersMultiply>(argument_types_, params, createResultType())
     {
         if (params.size() != 4)
             throw Exception(ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH, "Aggregate function {} requires exactly four parameters: "
@@ -69,7 +69,7 @@ public:
 
     String getName() const override
     {
-        return "HoltWinters";
+        return "HoltWintersMultiply";
     }
 
     Float64 getAlpha() const
@@ -194,19 +194,19 @@ public:
     }
 };
 
-
-class AggregateFunctionHoltWintersFillGaps
-    : public AggregateFunctionHoltWinters<HoltWintersWithTimeFillGaps, true>
+template<typename HoltWintersAggregator>
+class AggregateFunctionHoltWintersMultiplyFillGaps
+    : public AggregateFunctionHoltWintersMultiply<HoltWintersAggregator, true>
 {
 public:
-    AggregateFunctionHoltWintersFillGaps(const DataTypes & argument_types_, const Array & params)
-        : AggregateFunctionHoltWinters<HoltWintersWithTimeFillGaps, true>(argument_types_, params)
+    AggregateFunctionHoltWintersMultiplyFillGaps(const DataTypes & argument_types_, const Array & params)
+        : AggregateFunctionHoltWintersMultiply<HoltWintersAggregator, true>(argument_types_, params)
     {
     }
 
     String getName() const override
     {
-        return "HoltWintersFillGaps";
+        return "HoltWintersMultiplyFillGaps";
     }
 
     void merge(AggregateDataPtr __restrict place, ConstAggregateDataPtr rhs, Arena *) const override
@@ -223,9 +223,40 @@ public:
     }
 };
 
-void registerAggregateFunctionHoltWinters(AggregateFunctionFactory & factory)
+template<typename HoltWintersAggregator, bool have_time_column>
+class AggregateFunctionHoltWintersAddition
+    : public AggregateFunctionHoltWintersMultiply<HoltWintersAggregator, have_time_column>
 {
-    factory.registerFunction("HoltWinters",
+public:
+    AggregateFunctionHoltWintersAddition(const DataTypes & argument_types_, const Array & params)
+        : AggregateFunctionHoltWintersMultiply<HoltWintersAggregator, have_time_column>(argument_types_, params)
+    {
+    }
+
+    String getName() const override
+    {
+        return "HoltWintersAddition";
+    }
+};
+
+class AggregateFunctionHoltWintersAdditionFillGaps
+    : public AggregateFunctionHoltWintersMultiplyFillGaps<HoltWintersAdditionWithTimeFillGaps>
+{
+public:
+    AggregateFunctionHoltWintersAdditionFillGaps(const DataTypes & argument_types_, const Array & params)
+        : AggregateFunctionHoltWintersMultiplyFillGaps<HoltWintersAdditionWithTimeFillGaps>(argument_types_, params)
+    {
+    }
+
+    String getName() const override
+    {
+        return "HoltWintersAdditionFillGaps";
+    }
+};
+
+void registerAggregateFunctionHoltWintersMultiply(AggregateFunctionFactory & factory)
+{
+    factory.registerFunction("HoltWintersMultiply",
         [](const std::string & name, const DataTypes & argument_types, const Array & params, const Settings *) -> AggregateFunctionPtr
         {
             assertArityAtMost<2>(name, argument_types);
@@ -244,15 +275,15 @@ void registerAggregateFunctionHoltWinters(AggregateFunctionFactory & factory)
                         "Second argument for aggregate function {} must have unsigned integer type, got {}",
                         name, argument_types[1]->getName());
                 }
-                return std::make_shared<AggregateFunctionHoltWinters<HoltWintersWithTime, true>>(argument_types, params);
+                return std::make_shared<AggregateFunctionHoltWintersMultiply<HoltWintersMultiplyWithTime, true>>(argument_types, params);
             }
-            return std::make_shared<AggregateFunctionHoltWinters<HoltWinters, false>>(argument_types, params);
+            return std::make_shared<AggregateFunctionHoltWintersMultiply<HoltWintersMultiply, false>>(argument_types, params);
         });
 }
 
-void registerAggregateFunctionHoltWintersFillGaps(AggregateFunctionFactory & factory)
+void registerAggregateFunctionHoltWintersMultiplyFillGaps(AggregateFunctionFactory & factory)
 {
-    factory.registerFunction("HoltWintersFillGaps",
+    factory.registerFunction("HoltWintersMultipyFillGaps",
         [](const std::string & name, const DataTypes & argument_types, const Array & params, const Settings *) -> AggregateFunctionPtr
         {
             assertBinary(name, argument_types);
@@ -268,7 +299,56 @@ void registerAggregateFunctionHoltWintersFillGaps(AggregateFunctionFactory & fac
                     "Second argument for aggregate function {} must have unsigned integer type, got {}",
                     name, argument_types[1]->getName());
             }
-            return std::make_shared<AggregateFunctionHoltWintersFillGaps>(argument_types, params);
+            return std::make_shared<AggregateFunctionHoltWintersMultiplyFillGaps<HoltWintersMultiplyWithTimeFillGaps>>(argument_types, params);
+        });
+}
+
+void registerAggregateFunctionHoltWintersAddition(AggregateFunctionFactory & factory)
+{
+    factory.registerFunction("HoltWintersAddition",
+        [](const std::string & name, const DataTypes & argument_types, const Array & params, const Settings *) -> AggregateFunctionPtr
+        {
+            assertArityAtMost<2>(name, argument_types);
+            assertArityAtLeast<1>(name, argument_types);
+            if (!isNumber(*argument_types[0]))
+            {
+                throw Exception(ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT,
+                    "First argument for aggregate function {} must have numeric type, got {}",
+                    name, argument_types[0]->getName());
+            }
+            if (argument_types.size() > 1)
+            {
+                if (!isUnsignedInteger(*argument_types[1]))
+                {
+                    throw Exception(ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT,
+                        "Second argument for aggregate function {} must have unsigned integer type, got {}",
+                        name, argument_types[1]->getName());
+                }
+                return std::make_shared<AggregateFunctionHoltWintersAddition<HoltWintersAdditionWithTime, true>>(argument_types, params);
+            }
+            return std::make_shared<AggregateFunctionHoltWintersAddition<HoltWintersAddition, false>>(argument_types, params);
+        });
+}
+
+void registerAggregateFunctionHoltWintersAdditionFillGaps(AggregateFunctionFactory & factory)
+{
+    factory.registerFunction("HoltWintersAdditionFillGaps",
+        [](const std::string & name, const DataTypes & argument_types, const Array & params, const Settings *) -> AggregateFunctionPtr
+        {
+            assertBinary(name, argument_types);
+            if (!isNumber(*argument_types[0]))
+            {
+                throw Exception(ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT,
+                    "First argument for aggregate function {} must have numeric type, got {}",
+                    name, argument_types[0]->getName());
+            }
+            if (!isUnsignedInteger(*argument_types[1]))
+            {
+                throw Exception(ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT,
+                    "Second argument for aggregate function {} must have unsigned integer type, got {}",
+                    name, argument_types[1]->getName());
+            }
+            return std::make_shared<AggregateFunctionHoltWintersAdditionFillGaps<HoltWintersAdditionWithTimeFillGaps>>(argument_types, params);
         });
 }
 

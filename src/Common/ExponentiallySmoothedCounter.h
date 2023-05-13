@@ -1118,4 +1118,19 @@ struct HoltWintersMultiplyWithTimeFillGaps : DataHelper
 
 };
 
+struct HoltWintersAddition : DataHelper
+{
+
+};
+
+struct HoltWintersAdditionWithTime : DataHelper
+{
+
+};
+
+struct HoltWintersAdditionWithTimeFillGaps : DataHelper
+{
+
+};
+
 }
