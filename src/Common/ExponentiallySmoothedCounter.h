@@ -4,6 +4,7 @@
 #include <limits>
 #include <stdexcept>
 #include <optional>
+#include <vector>
 
 namespace DB
 {
@@ -1032,5 +1033,26 @@ struct HoltWithTimeFillGaps : DataHelper
         return get(max_time, alpha, beta) < other.get(max_time, alpha, beta);
     }
 };
+
+struct HoltWinters
+{
+    double value = 0;
+
+    double trend = 0;
+
+    std::vector<double> seasons;
+
+    unsigned long long int count = 0;
+};
+
+struct HoltWintersWithTime
+{
+
+};
+
+struct HoltWintersWithTimeFillGaps
+{
+
+}
 
 }
