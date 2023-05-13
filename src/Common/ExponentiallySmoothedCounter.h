@@ -194,6 +194,8 @@ struct DataHelper
         }
         return get_timestamp(a) > get_timestamp(b) ? a : b;
     }
+
+    using size_type = std::vector<double>::size_type;
 };
 
 /** https://en.wikipedia.org/wiki/Exponential_smoothing#Basic_(simple)_exponential_smoothing
@@ -1034,7 +1036,7 @@ struct HoltWithTimeFillGaps : DataHelper
     }
 };
 
-struct HoltWinters : DataHelper
+struct HoltWintersMultiply : DataHelper
 {
     double value = 0;
 
@@ -1043,16 +1045,77 @@ struct HoltWinters : DataHelper
     std::vector<double> seasons;
 
     unsigned long long int count = 0;
+
+    double first_value = 0;
+
+    double first_trend = 0;
+
+    HoltWintersMultiply() = default;
+
+    HoltWintersMultiply(double current_value)
+        : value(current_value), trend(0), seasons(0), count(1), first_value(current_value), first_trend(0)
+    {
+    }
+
+    HoltWintersMultiply(double current_value, double current_trend, std::vector<double> current_seasons, unsigned long long int current_count, double first_value_, double first_trend_)
+        : value(current_value), trend(current_trend), seasons(std::move(current_seasons)), count(current_count), first_value(first_value_), first_trend(first_trend_)
+    {
+    }
+
+    HoltWintersMultiply remap(unsigned long long int current_count, double alpha, double beta, double gamma, size_type seasons_count)
+    {
+        
+    }
+
+    static HoltWintersMultiply merge(const HoltWintersMultiply & a, const HoltWintersMultiply & b, double alpha, double beta, double gamma, size_type seasons_count)
+    {
+
+    }
+
+    template<typename... Args>
+    void merge(const HoltWintersMultiply & other, Args... args)
+    {
+        *this = merge(*this, other, args...);
+    }
+
+    template<typename... Args>
+    void add(double new_value, Args... args)
+    {
+        merge(HoltWintersMultiply(new_value), args);
+    }
+
+    template<typename... Args>
+    double get(unsigned long long int current_count, [[maybe_unused]] Args... args)
+    {
+        return (value + trend * (current_count - count)) * (
+            seasons.size()
+            ? seasons[current_count % seasons.size()]
+            : 1
+        )
+    }
+
+    template<typename... Args>
+    double get([[maybe_unused]] Args... args)
+    {
+        return get(count + 1, args);
+    }
+
+    template<typename... Args>
+    bool less(const HoltWintersMultiply & other, [[maybe_unused]] Args... args)
+    {
+        unsigned long long int max_count = std::max(count, other.count);
+        return get(max_count, args) < other.get(max_count, args);
+    }
 };
 
-struct HoltWintersWithTime : DataHelper
+struct HoltWintersMultiplyWithTime : DataHelper
 {
 
 };
 
-struct HoltWintersWithTimeFillGaps : DataHelper
+struct HoltWintersMultiplyWithTimeFillGaps : DataHelper
 {
 
-}
+};
 
 }
