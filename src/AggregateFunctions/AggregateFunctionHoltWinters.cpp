@@ -4,6 +4,9 @@
 #include <Common/ExponentiallySmoothedCounter.h>
 #include <Common/FieldVisitorConvertToNumber.h>
 #include <DataTypes/DataTypesNumber.h>
+#include <DataTypes/DataTypeTuple.h>
+#include <DataTypes/DataTypeArray.h>
+#include <Columns/ColumnArray.h>
 #include <IO/ReadHelpers.h>
 #include <IO/WriteHelpers.h>
 
@@ -22,10 +25,9 @@ namespace ErrorCodes
 
 /** See the comments in ExponentiallySmoothedCounter.h
   */
-template<typename HoltWintersAggregator, bool have_time_column>
+template<typename Aggregator, bool have_time_column>
 class AggregateFunctionHoltWintersMultiply
-    : public IAggregateFunctionDataHelper<HoltWintersAggregator,
-                AggregateFunctionHoltWintersMultiply<HoltWintersAggregator, have_time_column>>
+    : public IAggregateFunctionDataHelper<Aggregator, AggregateFunctionHoltWintersMultiply<Aggregator, have_time_column>>
 {
 private:
     String name;
@@ -37,7 +39,7 @@ private:
 
 public:
     AggregateFunctionHoltWintersMultiply(const DataTypes & argument_types_, const Array & params)
-        : IAggregateFunctionDataHelper<HoltWintersAggregator, AggregateFunctionHoltWintersMultiply>(argument_types_, params, createResultType())
+        : IAggregateFunctionDataHelper<Aggregator, AggregateFunctionHoltWintersMultiply<Aggregator, have_time_column>>(argument_types_, params, createResultType())
     {
         if (params.size() != 4)
             throw Exception(ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH, "Aggregate function {} requires exactly four parameters: "
@@ -97,12 +99,24 @@ public:
 
     static DataTypePtr createResultType()
     {
-        DataTypes types;
-        types.push_back(std::make_shared<DataTypeNumber<Float64>>());
-        types.push_back(std::make_shared<DataTypeNumber<Float64>>());
-        types.push_back(std::make_shared<DataTypeArray>(DataTypeNumber<Float64>));
-        auto tuple = std::make_shared<DataTypeTuple>(types);
-        return std::make_shared<DataTypeArray>(tuple);
+        DataTypes types
+        {
+            std::make_shared<DataTypeNumber<Float64>>(),
+            std::make_shared<DataTypeNumber<Float64>>(),
+            std::make_shared<DataTypeNumber<Float64>>()
+        };
+        
+        Strings names
+        {
+            "next value",
+            "trend",
+            "seasons"
+        };
+
+        return std::make_shared<DataTypeTuple>(
+            std::move(types),
+            std::move(names)
+        );
     }
 
     bool allocatesMemoryInArena() const override { return false; }
@@ -128,57 +142,70 @@ public:
 
     void serialize(ConstAggregateDataPtr __restrict place, WriteBuffer & buf, std::optional<size_t> /* version */) const override
     {
-        writeBinary(this->data(place).value, buf);
-        writeBinary(this->data(place).trend, buf);
-        writeBinary(this->data(place).seasons.size(), buf);
-        for (double value : this->data(place).seasons)
+        auto & data = this->data(place);
+        writeBinary(data.value, buf);
+        writeBinary(data.trend, buf);
+        if (!data.seasons.has_value())
         {
-            writeBinary(value);
-        }
-        if constexpr (have_time_column)
-        {
-            writeBinary(this->data(place).timestamp, buf);
-            writeBinary(this->data(place).first_value.value, buf);
-            writeBinary(this->data(place).first_value.timestamp, buf);
-            writeBinary(this->data(place).first_value.was, buf);
-            writeBinary(this->data(place).first_trend.value, buf);
-            writeBinary(this->data(place).first_trend.timestamp, buf);
-            writeBinary(this->data(place).first_trend.was, buf);
+            writeBinary(false, buf);
         }
         else
         {
-            writeBinary(this->data(place).count, buf);
-            writeBinary(this->data(place).first_value, buf);
-            writeBinary(this->data(place).first_trend, buf);
+            writeBinary(true, buf);
+            for (UInt32 i = 0; i < seasons_count; ++i)
+            {
+                writeBinary(data.getSeason(i), buf);
+            }
+        }
+        if constexpr (have_time_column)
+        {
+            writeBinary(data.timestamp, buf);
+            writeBinary(data.first_value.value, buf);
+            writeBinary(data.first_value.timestamp, buf);
+            writeBinary(data.first_value.was, buf);
+            writeBinary(data.first_trend.value, buf);
+            writeBinary(data.first_trend.timestamp, buf);
+            writeBinary(data.first_trend.was, buf);
+        }
+        else
+        {
+            writeBinary(data.count, buf);
+            writeBinary(data.first_value, buf);
+            writeBinary(data.first_trend, buf);
         }
     }
 
     void deserialize(AggregateDataPtr __restrict place, ReadBuffer & buf, std::optional<size_t> /* version */, Arena *) const override
     {
-        readBinary(this->data(place).value, buf);
-        readBinary(this->data(place).trend, buf);
-        this->data(place)::size_type seasons_count;
-        readBinary(seasons_count, buf);
-        this->data(place).seasons.resize(seasons_count);
-        for (this->data(place)::size_type i = 0; i < seasons_count; ++i)
+        auto & data = this->data(place);
+        readBinary(data.value, buf);
+        readBinary(data.trend, buf);
+        bool has_seasons;
+        readBinary(has_seasons, buf);
+        if (has_seasons)
         {
-            readBinary(this->data(place).seasons[i], buf);
+            for (UInt32 i = 0; i < seasons_count; ++i)
+            {
+                double value;
+                readBinary(value, buf);
+                data.setSeason(seasons_count, i, value);
+            }
         }
         if constexpr (have_time_column)
         {
-            readBinary(this->data(place).timestamp, buf);
-            readBinary(this->data(place).first_value.value, buf);
-            readBinary(this->data(place).first_value.timestamp, buf);
-            readBinary(this->data(place).first_value.was, buf);
-            readBinary(this->data(place).first_trend.value, buf);
-            readBinary(this->data(place).first_trend.timestamp, buf);
-            readBinary(this->data(place).first_trend.was, buf);
+            readBinary(data.timestamp, buf);
+            readBinary(data.first_value.value, buf);
+            readBinary(data.first_value.timestamp, buf);
+            readBinary(data.first_value.was, buf);
+            readBinary(data.first_trend.value, buf);
+            readBinary(data.first_trend.timestamp, buf);
+            readBinary(data.first_trend.was, buf);
         }
         else
         {
-            readBinary(this->data(place).count, buf);
-            readBinary(this->data(place).first_value, buf);
-            readBinary(this->data(place).first_trend, buf);
+            readBinary(data.count, buf);
+            readBinary(data.first_value, buf);
+            readBinary(data.first_trend, buf);
         }
     }
 
@@ -189,21 +216,22 @@ public:
         auto & to_tuple = assert_cast<ColumnTuple &>(to_array.getData());
         auto & value = assert_cast<ColumnVector<Float64> &>(to_tuple.getColumn(0));
         auto & trend = assert_cast<ColumnVector<Float64> &>(to_tuple.getColumn(1));
-        //auto & seasons = assert_cast<ColumnVector<DataTypeArray> &>(to_tuple.getColumn(2));
-        // TODO aleks5d: insert seasons array into result
-        value.push_back(data.value);
-        trend.push_back(data.trend);
-        
+        auto & seasons = assert_cast<ColumnVector<Float64> &>(to_tuple.getColumn(2));
+        value.getData().push_back(data.get());
+        trend.getData().push_back(data.trend);
+        for (UInt32 i = 0; i < seasons_count; ++i) {
+            seasons.getData().push_back(data.getSeason(i));
+        }
     }
 };
 
-template<typename HoltWintersAggregator>
+template<typename Aggregator>
 class AggregateFunctionHoltWintersMultiplyFillGaps
-    : public AggregateFunctionHoltWintersMultiply<HoltWintersAggregator, true>
+    : public AggregateFunctionHoltWintersMultiply<Aggregator, true>
 {
 public:
     AggregateFunctionHoltWintersMultiplyFillGaps(const DataTypes & argument_types_, const Array & params)
-        : AggregateFunctionHoltWintersMultiply<HoltWintersAggregator, true>(argument_types_, params)
+        : AggregateFunctionHoltWintersMultiply<Aggregator, true>(argument_types_, params)
     {
     }
 
@@ -226,13 +254,13 @@ public:
     }
 };
 
-template<typename HoltWintersAggregator, bool have_time_column>
+template<typename Aggregator, bool have_time_column>
 class AggregateFunctionHoltWintersAddition
-    : public AggregateFunctionHoltWintersMultiply<HoltWintersAggregator, have_time_column>
+    : public AggregateFunctionHoltWintersMultiply<Aggregator, have_time_column>
 {
 public:
     AggregateFunctionHoltWintersAddition(const DataTypes & argument_types_, const Array & params)
-        : AggregateFunctionHoltWintersMultiply<HoltWintersAggregator, have_time_column>(argument_types_, params)
+        : AggregateFunctionHoltWintersMultiply<Aggregator, have_time_column>(argument_types_, params)
     {
     }
 

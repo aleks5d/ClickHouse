@@ -253,7 +253,7 @@ struct DataHelper
     }
 
     template<HoltWintersType type>
-    static seasons_t mergeSeasons(const seasons_t & a, const seasons_t b)
+    static seasons_t mergeSeasons(const seasons_t & a, const seasons_t & b)
     {
         if (!a.has_value() || !b.has_value())
         {
@@ -1153,7 +1153,7 @@ struct HoltWinters : DataHelper
 
     HoltWinters<type> remap(unsigned long long int current_count, double alpha, double beta, double gamma, [[maybe_unused]] seasons_size_t seasons_count) const
     {
-        return std::move(HoltWinter<type>(
+        return std::move(HoltWinters<type>(
             value * scale(current_count - count, alpha),
             trend * scale(current_count - count, beta),
             std::move(scaleSeasons<type>(seasons, current_count - count, gamma)),
@@ -1171,7 +1171,7 @@ struct HoltWinters : DataHelper
         }
         if (b.count == 1) // careful addition of one element
         {
-            double old_season = getSeason<type>(a.seasons, a.count);
+            double old_season = DataHelper::getSeason<type>(a.seasons, a.count);
             double new_value;
             if constexpr (type == HoltWintersType::Multiply)
             {
@@ -1198,7 +1198,7 @@ struct HoltWinters : DataHelper
             return std::move(HoltWinters<type>(
                 new_value,
                 new_trend,
-                std::move(setSeason(a.seasons, seasons_count, a.count + 1, new_season)),
+                std::move(DataHelper::setSeason(a.seasons, seasons_count, a.count + 1, new_season)),
                 a.count + b.count,
                 a.first_value,
                 a.count == 1 ? new_trend : a.first_trend
@@ -1210,7 +1210,7 @@ struct HoltWinters : DataHelper
             return std::move(HoltWinters<type>(
                 remapped_a.value + b.value - b.first_value * scale(b.count, alpha),
                 remapped_a.trend + b.trend - b.first_trend * scale(b.count, beta),
-                std::move(mergeSeasons<type>(remapped_a.seasons, b.seasons)),
+                std::move(DataHelper::mergeSeasons<type>(remapped_a.seasons, b.seasons)),
                 remapped_a.count,
                 remapped_a.first_value,
                 remapped_a.first_trend
@@ -1218,42 +1218,47 @@ struct HoltWinters : DataHelper
         }
     }
 
-    template<typename... Args>
-    void merge(const HoltWinters<type> & other, Args... args)
+    void merge(const HoltWinters<type> & other, double alpha, double beta, double gamma, seasons_size_t seasons_count)
     {
-        *this = std::move(merge(*this, other, args...));
+        *this = std::move(merge(*this, other, alpha, beta, gamma, seasons_count));
     }
 
-    template<typename... Args>
-    void add(double new_value, Args... args)
+    void add(double new_value, double alpha, double beta, double gamma, seasons_size_t seasons_count)
     {
-        merge(HoltWinters<type>(new_value), args...);
+        merge(HoltWinters<type>(new_value), alpha, beta, gamma, seasons_count);
     }
 
-    template<typename... Args>
-    double get(unsigned long long int current_count, [[maybe_unused]] Args... args) const
+    double get(unsigned long long int current_count) const
     {
         if constexpr (type == HoltWintersType::Multiply)
         {
-            return (value + trend * (current_count - count)) * getSeason<type>(seasons, current_count);
+            return (value + trend * (current_count - count)) * DataHelper::getSeason<type>(seasons, current_count);
         }
         else
         {
-            return (value + trend * (current_count - count)) + getSeason<type>(seasons, current_count);
+            return (value + trend * (current_count - count)) + DataHelper::getSeason<type>(seasons, current_count);
         }
     }
 
-    template<typename... Args>
-    double get([[maybe_unused]] Args... args) const
+    double get() const
     {
-        return get(count + 1, args...);
+        return get(count + 1);
     }
 
-    template<typename... Args>
-    bool less(const HoltWinters<type> & other, [[maybe_unused]] Args... args)
+    double getSeason(seasons_size_t id) const
+    {
+        return DataHelper::getSeason<type>(seasons, id);
+    }
+
+    void setSeason(seasons_size_t seasons_count, seasons_size_t id, double new_value)
+    {
+        DataHelper::setSeason(seasons, seasons_count, id, new_value);
+    }
+
+    bool less(const HoltWinters<type> & other, [[maybe_unused]] double alpha, double beta, double gamma, seasons_size_t seasons_count)
     {
         unsigned long long int max_count = std::max(count, other.count);
-        return get(max_count, args...) < other.get(max_count, args...);
+        return get(max_count, alpha, beta, gamma, seasons_count) < other.get(max_count, alpha, beta, gamma, seasons_count);
     }
 };
 
@@ -1329,7 +1334,7 @@ struct HoltWintersWithTime : DataHelper
                 }
                 for (unsigned long long i = 0; i < diff_time; ++i)
                 {
-                    setSeason(seasons, seasons_count, i, trend);
+                    DataHelper::setSeason(seasons, seasons_count, i, trend);
                 }
                 return std::move(HoltWintersWithTime<type>(
                     remapped_a.value + remapped_b.value
@@ -1354,7 +1359,7 @@ struct HoltWintersWithTime : DataHelper
                     - additional_value.value * scale(max_time - additional_value.timestamp + 1, alpha),
                 remapped_a.trend + remapped_b.trend
                     - additional_trend.value * scale(max_time - additional_trend.timestamp + 1, beta),
-                std::move(mergeSeasons<type>(remapped_a.seasons, remapped_b.seasons)),
+                std::move(DataHelper::mergeSeasons<type>(remapped_a.seasons, remapped_b.seasons)),
                 max_time,
                 ovt::min_or_merge(a.first_value, b.first_value),
                 ovt::min_or_merge(a.first_trend, b.first_trend)
@@ -1362,42 +1367,47 @@ struct HoltWintersWithTime : DataHelper
         }
     }
 
-    template<typename... Args>
-    void merge(const HoltWintersWithTime<type> & other, Args... args)
+    void merge(const HoltWintersWithTime<type> & other, double alpha, double beta, double gamma, seasons_size_t seasons_count)
     {
-        *this = merge(*this, other, args...);
+        *this = merge(*this, other, alpha, beta, gamma, seasons_count);
     }
 
-    template<typename... Args>
-    void add(double new_value, unsigned long long int new_timestamp, Args... args)
+    void add(double new_value, unsigned long long int new_timestamp, double alpha, double beta, double gamma, seasons_size_t seasons_count)
     {
-        merge(HoltWintersWithTime(new_value, new_timestamp), args...);
+        merge(HoltWintersWithTime<type>(new_value, new_timestamp), alpha, beta, gamma, seasons_count);
     }
 
-    template<typename... Args>
-    double get(unsigned long long int current_time, [[maybe_unused]] Args... args) const
+    double get(unsigned long long int current_time) const
     {
         if constexpr (type == HoltWintersType::Multiply)
         {
-            return (value + trend * (current_time - timestamp)) * getSeason<type>(seasons, current_time);
+            return (value + trend * (current_time - timestamp)) * DataHelper::getSeason<type>(seasons, current_time);
         }
         else
         {
-            return (value + trend * (current_time - timestamp)) + getSeason<type>(seasons, current_time);
+            return (value + trend * (current_time - timestamp)) + DataHelper::getSeason<type>(seasons, current_time);
         }
     }
 
-    template<typename... Args>
-    double get([[maybe_unused]] Args... args) const
+    double get() const
     {
-        return get(timestamp + 1, args...);
+        return get(timestamp + 1);
+    }
+    
+    double getSeason(seasons_size_t id) const
+    {
+        return DataHelper::getSeason<type>(seasons, id);
     }
 
-    template<typename... Args>
-    bool less(const HoltWintersWithTime<type> & other, [[maybe_unused]] Args... args)
+    void setSeason(seasons_size_t seasons_count, seasons_size_t id, double new_value)
+    {
+        DataHelper::setSeason(seasons, seasons_count, id, new_value);
+    }
+
+    bool less(const HoltWintersWithTime<type> & other, [[maybe_unused]] double alpha, double beta, double gamma, seasons_size_t seasons_count)
     {
         unsigned long long int max_time = std::max(timestamp, other.timestamp);
-        return get(max_time, args...) < other.get(max_time, args...);
+        return get(max_time, alpha, beta, gamma, seasons_count) < other.get(max_time, alpha, beta, gamma, seasons_count);
     }
 };
 
@@ -1450,11 +1460,11 @@ struct HoltWintersWithTimeFillGaps : DataHelper
             seasons_t seasons;
             if constexpr (type == HoltWintersType::Multiply)
             {
-                setSeason(seasons, seasons_count, a.timestamp, (new_value == 0 ? 0 : gamma * b.value / new_value));
+                DataHelper::setSeason(seasons, seasons_count, a.timestamp, (new_value == 0 ? 0 : gamma * b.value / new_value));
             }
             else
             {
-                setSeason(seasons, seasons_count, a.timestamp, trend * gamma);
+                DataHelper::setSeason(seasons, seasons_count, a.timestamp, trend * gamma);
             }
             return std::move(HoltWintersWithTimeFillGaps<type>(
                 new_value,
@@ -1468,7 +1478,7 @@ struct HoltWintersWithTimeFillGaps : DataHelper
         else if (!a.first_trend.was)
         {
             auto predicted_b = std::move(b.predict_until(a.timestamp, alpha, beta, gamma, seasons_count));
-            double old_season = getSeason<type>(predicted_b.seasons, a.timestamp);
+            double old_season = DataHelper::getSeason<type>(predicted_b.seasons, a.timestamp);
             double new_value;
             if constexpr (type == HoltWintersType::Multiply)
             {
@@ -1491,7 +1501,7 @@ struct HoltWintersWithTimeFillGaps : DataHelper
             return std::move(HoltWintersWithTimeFillGaps<type>(
                 new_value,
                 new_trend,
-                std::move(setSeason(b.seasons, seasons_count, a.timestamp, new_season)),
+                std::move(DataHelper::setSeason(b.seasons, seasons_count, a.timestamp, new_season)),
                 a.timestamp,
                 b.first_value,
                 b.first_trend
@@ -1504,7 +1514,7 @@ struct HoltWintersWithTimeFillGaps : DataHelper
             return std::move(HoltWintersWithTimeFillGaps<type>(
                 a.value + predicted_b.value - a.first_value.value * scale(a.timestamp - a.first_value.timestamp, alpha),
                 a.trend + predicted_b.trend - a.first_trend.value * scale(a.timestamp - a.first_trend.timestamp, beta),
-                std::move(mergeSeasons(a.seasons, b.seasons)),
+                std::move(DataHelper::mergeSeasons<type>(a.seasons, b.seasons)),
                 a.timestamp,
                 b.first_value,
                 b.first_trend
@@ -1512,8 +1522,7 @@ struct HoltWintersWithTimeFillGaps : DataHelper
         }
     }
 
-    template<typename... Args>
-    static HoltWintersWithTimeFillGaps<type> merge(const HoltWintersWithTimeFillGaps<type> & a, const HoltWintersWithTimeFillGaps<type> & b, Args... args)
+    static HoltWintersWithTimeFillGaps<type> merge(const HoltWintersWithTimeFillGaps<type> & a, const HoltWintersWithTimeFillGaps<type> & b, double alpha, double beta, double gamma, seasons_size_t seasons_count)
     {
         if (!a.first_value.was || !b.first_value.was)
         {
@@ -1521,11 +1530,11 @@ struct HoltWintersWithTimeFillGaps : DataHelper
         }
         else if (a.first_value.timestamp > b.timestamp)
         {
-            return merge_ordered(a, b, args...);
+            return merge_ordered(a, b, alpha, beta, gamma, seasons_count);
         }
         else if (b.first_value.timestamp > a.timestamp)
         {
-            return merge_ordered(b, a, args...);
+            return merge_ordered(b, a, alpha, beta, gamma, seasons_count);
         }
         else
         {
@@ -1533,59 +1542,62 @@ struct HoltWintersWithTimeFillGaps : DataHelper
         }
     }
 
-    template<typename... Args>
-    void merge(const HoltWintersWithTimeFillGaps<type> & other, Args... args)
+    void merge(const HoltWintersWithTimeFillGaps<type> & other, double alpha, double beta, double gamma, seasons_size_t seasons_count)
     {
-        *this = merge(*this, other, args...);
+        *this = merge(*this, other, alpha, beta, gamma, seasons_count);
     }
 
-    template<typename... Args>
-    void add(double new_value, unsigned long long int new_timestamp, Args... args)
+    void add(double new_value, unsigned long long int new_timestamp, double alpha, double beta, double gamma, seasons_size_t seasons_count)
     {
-        merge(HoltWintersWithTimeFillGaps<type>(new_value, new_timestamp), args...);
+        merge(HoltWintersWithTimeFillGaps<type>(new_value, new_timestamp), alpha, beta, gamma, seasons_count);
     }
 
-    template<typename... Args>
-    void add_predict(Args... args)
+    void add_predict(double alpha, double beta, double gamma, seasons_size_t seasons_count)
     {
-        add(get(args...), timestamp + 1, args...);
+        add(get(), timestamp + 1, alpha, beta, gamma, seasons_count);
     }
 
-    template<typename... Args>
-    HoltWintersWithTimeFillGaps<type> predict_until(unsigned long long int current_time, Args... args) const
+    HoltWintersWithTimeFillGaps<type> predict_until(unsigned long long int current_time, double alpha, double beta, double gamma, seasons_size_t seasons_count) const
     {
         auto copy_of_me = *this;
         while (copy_of_me.timestamp + 1 < current_time)
         {
-            copy_of_me.add_predict(args...);
+            copy_of_me.add_predict(alpha, beta, gamma, seasons_count);
         }
         return std::move(copy_of_me);
     }
 
-    template<typename... Args>
-    double get(unsigned long long int current_time, [[maybe_unused]] Args... args) const
+    double get(unsigned long long int current_time) const
     {
         if constexpr (type == HoltWintersType::Multiply)
         {
-            return (value + trend * (current_time - timestamp)) * getSeason<type>(seasons, current_time);
+            return (value + trend * (current_time - timestamp)) * DataHelper::getSeason<type>(seasons, current_time);
         }
         else
         {
-            return (value + trend * (current_time - timestamp)) + getSeason<type>(seasons, current_time);
+            return (value + trend * (current_time - timestamp)) + DataHelper::getSeason<type>(seasons, current_time);
         }
     }
 
-    template<typename... Args>
-    double get([[maybe_unused]] Args... args) const
+    double get() const
     {
-        return get(timestamp + 1, args...);
+        return get(timestamp + 1);
     }
 
-    template<typename... Args>
-    bool less(const HoltWintersWithTimeFillGaps<type> & other, [[maybe_unused]] Args... args)
+    double getSeason(seasons_size_t id) const
+    {
+        return DataHelper::getSeason<type>(seasons, id);
+    }
+
+    void setSeason(seasons_size_t seasons_count, seasons_size_t id, double new_value)
+    {
+        DataHelper::setSeason(seasons, seasons_count, id, new_value);
+    }
+
+    bool less(const HoltWintersWithTimeFillGaps<type> & other, [[maybe_unused]] double alpha, double beta, double gamma, seasons_size_t seasons_count)
     {
         unsigned long long int max_time = std::max(timestamp, other.timestamp);
-        return get(max_time, args...) < other.get(max_time, args...);
+        return get(max_time, alpha, beta, gamma, seasons_count) < other.get(max_time, alpha, beta, gamma, seasons_count);
     }
 };
 
