@@ -243,11 +243,11 @@ public:
 };
 
 class AggregateFunctionHoltWintersAdditionFillGaps
-    : public AggregateFunctionHoltWintersMultiplyFillGaps<HoltWintersAdditionWithTimeFillGaps>
+    : public AggregateFunctionHoltWintersMultiplyFillGaps<HoltWintersWithTimeFillGaps<HoltWintersType::Additional>>
 {
 public:
     AggregateFunctionHoltWintersAdditionFillGaps(const DataTypes & argument_types_, const Array & params)
-        : AggregateFunctionHoltWintersMultiplyFillGaps<HoltWintersAdditionWithTimeFillGaps>(argument_types_, params)
+        : AggregateFunctionHoltWintersMultiplyFillGaps<HoltWintersWithTimeFillGaps<HoltWintersType::Additional>>(argument_types_, params)
     {
     }
 
@@ -278,15 +278,15 @@ void registerAggregateFunctionHoltWintersMultiply(AggregateFunctionFactory & fac
                         "Second argument for aggregate function {} must have unsigned integer type, got {}",
                         name, argument_types[1]->getName());
                 }
-                return std::make_shared<AggregateFunctionHoltWintersMultiply<HoltWintersMultiplyWithTime, true>>(argument_types, params);
+                return std::make_shared<AggregateFunctionHoltWintersMultiply<HoltWintersWithTime<HoltWintersType::Multiply>, true>>(argument_types, params);
             }
-            return std::make_shared<AggregateFunctionHoltWintersMultiply<HoltWintersMultiply, false>>(argument_types, params);
+            return std::make_shared<AggregateFunctionHoltWintersMultiply<HoltWinters<HoltWintersType::Multiply>, false>>(argument_types, params);
         });
 }
 
 void registerAggregateFunctionHoltWintersMultiplyFillGaps(AggregateFunctionFactory & factory)
 {
-    factory.registerFunction("HoltWintersMultipyFillGaps",
+    factory.registerFunction("HoltWintersMultiplyFillGaps",
         [](const std::string & name, const DataTypes & argument_types, const Array & params, const Settings *) -> AggregateFunctionPtr
         {
             assertBinary(name, argument_types);
@@ -302,7 +302,7 @@ void registerAggregateFunctionHoltWintersMultiplyFillGaps(AggregateFunctionFacto
                     "Second argument for aggregate function {} must have unsigned integer type, got {}",
                     name, argument_types[1]->getName());
             }
-            return std::make_shared<AggregateFunctionHoltWintersMultiplyFillGaps<HoltWintersMultiplyWithTimeFillGaps>>(argument_types, params);
+            return std::make_shared<AggregateFunctionHoltWintersMultiplyFillGaps<HoltWintersWithTimeFillGaps<HoltWintersType::Multiply>>>(argument_types, params);
         });
 }
 
@@ -327,9 +327,9 @@ void registerAggregateFunctionHoltWintersAddition(AggregateFunctionFactory & fac
                         "Second argument for aggregate function {} must have unsigned integer type, got {}",
                         name, argument_types[1]->getName());
                 }
-                return std::make_shared<AggregateFunctionHoltWintersAddition<HoltWintersAdditionWithTime, true>>(argument_types, params);
+                return std::make_shared<AggregateFunctionHoltWintersAddition<HoltWintersWithTime<HoltWintersType::Additional>, true>>(argument_types, params);
             }
-            return std::make_shared<AggregateFunctionHoltWintersAddition<HoltWintersAddition, false>>(argument_types, params);
+            return std::make_shared<AggregateFunctionHoltWintersAddition<HoltWinters<HoltWintersType::Additional>, false>>(argument_types, params);
         });
 }
 
