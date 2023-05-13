@@ -803,7 +803,7 @@ struct HoltWithTime
                 double trend = (max_value.value - min_value.value) / (max_value.timestamp - min_value.timestamp);
                 return HoltWithTime(
                     remapped_a.value + remapped_b.value
-                        - max_value.value * scale(max_time - max_value.timestamp, alpha), // value
+                        - max_value.value * (1 - alpha), // value
                     trend, // trend
                     max_time, // timestamp
                     min_value, // first_value

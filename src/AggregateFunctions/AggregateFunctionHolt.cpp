@@ -4,6 +4,8 @@
 #include <Common/ExponentiallySmoothedCounter.h>
 #include <Common/FieldVisitorConvertToNumber.h>
 #include <DataTypes/DataTypesNumber.h>
+#include <DataTypes/DataTypeTuple.h>
+#include <Columns/ColumnArray.h>
 #include <IO/ReadHelpers.h>
 #include <IO/WriteHelpers.h>
 
@@ -73,11 +75,22 @@ public:
 
     static DataTypePtr createResultType()
     {
-        DataTypes types;
-        types.push_back(std::make_shared<DataTypeNumber<Float64>>());
-        types.push_back(std::make_shared<DataTypeNumber<Float64>>());
-        auto tuple = std::make_shared<DataTypeTuple>(types);
-        return std::make_shared<DataTypeArray>(tuple);
+        DataTypes types
+        {
+            std::make_shared<DataTypeNumber<Float64>>(),
+            std::make_shared<DataTypeNumber<Float64>>()
+        };
+
+        Strings names
+        {
+            "next value",
+            "trend"
+        };
+
+        return std::make_shared<DataTypeTuple>(
+            std::move(types), 
+            std::move(names)
+        );
     }
 
     bool allocatesMemoryInArena() const override { return false; }
@@ -118,8 +131,8 @@ public:
         else
         {
             writeBinary(this->data(place).count, buf);
-            writeBinary(this->data(place).first_value);
-            writeBinary(this->data(place).first_trend);
+            writeBinary(this->data(place).first_value, buf);
+            writeBinary(this->data(place).first_trend, buf);
         }
     }
 
@@ -152,8 +165,8 @@ public:
         auto & to_tuple = assert_cast<ColumnTuple &>(to_array.getData());
         auto & value = assert_cast<ColumnVector<Float64> &>(to_tuple.getColumn(0));
         auto & trend = assert_cast<ColumnVector<Float64> &>(to_tuple.getColumn(1));
-        value.push_back(data.value);
-        trend.push_back(data.trend);
+        value.getData().push_back(data.value);
+        trend.getData().push_back(data.trend);
     }
 };
 
