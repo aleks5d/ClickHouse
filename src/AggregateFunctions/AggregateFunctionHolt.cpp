@@ -41,7 +41,7 @@ public:
                 "alpha, beta.", getName());
 
         alpha = applyVisitor(FieldVisitorConvertToNumber<Float64>(), params[0]);
-        beta = applyVisitor(FieldVisitorConvertToNumber<Float64>(params[1]));
+        beta = applyVisitor(FieldVisitorConvertToNumber<Float64>(), params[1]);
         if (alpha < 0)
             throw Exception(ErrorCodes::ILLEGAL_VALUE_OF_ARGUMENT, "Aggregate function {} requires non negative alpha, got {}", 
                 getName(), alpha);
