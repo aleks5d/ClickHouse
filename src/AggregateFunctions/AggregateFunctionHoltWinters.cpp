@@ -25,21 +25,20 @@ namespace ErrorCodes
 
 /** See the comments in ExponentiallySmoothedCounter.h
   */
-template<typename Aggregator, bool have_time_column>
-class AggregateFunctionHoltWintersMultiply
-    : public IAggregateFunctionDataHelper<Aggregator, AggregateFunctionHoltWintersMultiply<Aggregator, have_time_column>>
+
+template<typename Aggregator, typename Main>
+class AggregateFunctionHoltWintersBase
+    : public IAggregateFunctionDataHelper<Aggregator, Main>
 {
 private:
-    String name;
     Float64 alpha;
     Float64 beta;
     Float64 gamma;
     UInt32 seasons_count;
 
-
 public:
-    AggregateFunctionHoltWintersMultiply(const DataTypes & argument_types_, const Array & params)
-        : IAggregateFunctionDataHelper<Aggregator, AggregateFunctionHoltWintersMultiply<Aggregator, have_time_column>>(argument_types_, params, createResultType())
+    AggregateFunctionHoltWintersBase(const DataTypes & argument_types_, const Array & params)
+        : IAggregateFunctionDataHelper<Aggregator, Main>(argument_types_, params, createResultType())
     {
         if (params.size() != 4)
             throw Exception(ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH, "Aggregate function {} requires exactly four parameters: "
@@ -74,9 +73,9 @@ public:
 
     String getName() const override
     {
-        return "HoltWintersMultiply";
+        return "HoltWintersBase";
     }
-
+    
     Float64 getAlpha() const
     {
         return alpha;
@@ -121,25 +120,19 @@ public:
 
     bool allocatesMemoryInArena() const override { return false; }
 
-    void add(AggregateDataPtr __restrict place, const IColumn ** columns, size_t row_num, Arena *) const override
-    {
-        const auto & value = columns[0]->getFloat64(row_num);
-        if constexpr (have_time_column)
-        {
-            const auto & timestamp = columns[1]->getUInt(row_num);
-            this->data(place).add(value, timestamp, alpha, beta, gamma, seasons_count);
-        }
-        else
-        {
-            this->data(place).add(value, alpha, beta, gamma, seasons_count);
-        }
-    }
-
     void merge(AggregateDataPtr __restrict place, ConstAggregateDataPtr rhs, Arena *) const override
     {
-        this->data(place).merge(this->data(rhs), alpha, beta, gamma, seasons_count);
+        try
+        {
+            this->data(place).merge(this->data(rhs), this->getAlpha(), this->getBeta(), this->getGamma(), this->getSeasonsCount());
+        }
+        catch (const std::invalid_argument & e)
+        {
+            throw Exception(ErrorCodes::INCORRECT_DATA, "Incorrect data given to aggregate function {}, {}",
+                getName(), e.what());
+        }
     }
-
+    
     void serialize(ConstAggregateDataPtr __restrict place, WriteBuffer & buf, std::optional<size_t> /* version */) const override
     {
         auto & data = this->data(place);
@@ -157,24 +150,8 @@ public:
                 writeBinary(data.getSeason(i), buf);
             }
         }
-        if constexpr (have_time_column)
-        {
-            writeBinary(data.timestamp, buf);
-            writeBinary(data.first_value.value, buf);
-            writeBinary(data.first_value.timestamp, buf);
-            writeBinary(data.first_value.was, buf);
-            writeBinary(data.first_trend.value, buf);
-            writeBinary(data.first_trend.timestamp, buf);
-            writeBinary(data.first_trend.was, buf);
-        }
-        else
-        {
-            writeBinary(data.count, buf);
-            writeBinary(data.first_value, buf);
-            writeBinary(data.first_trend, buf);
-        }
     }
-
+    
     void deserialize(AggregateDataPtr __restrict place, ReadBuffer & buf, std::optional<size_t> /* version */, Arena *) const override
     {
         auto & data = this->data(place);
@@ -190,22 +167,6 @@ public:
                 readBinary(value, buf);
                 data.setSeason(seasons_count, i, value);
             }
-        }
-        if constexpr (have_time_column)
-        {
-            readBinary(data.timestamp, buf);
-            readBinary(data.first_value.value, buf);
-            readBinary(data.first_value.timestamp, buf);
-            readBinary(data.first_value.was, buf);
-            readBinary(data.first_trend.value, buf);
-            readBinary(data.first_trend.timestamp, buf);
-            readBinary(data.first_trend.was, buf);
-        }
-        else
-        {
-            readBinary(data.count, buf);
-            readBinary(data.first_value, buf);
-            readBinary(data.first_trend, buf);
         }
     }
 
@@ -225,96 +186,135 @@ public:
     }
 };
 
-template<typename Aggregator>
-class AggregateFunctionHoltWintersMultiplyFillGaps
-    : public AggregateFunctionHoltWintersMultiply<Aggregator, true>
+template<typename Aggregator, HoltWintersType type>
+class AggregateFunctionHoltWinters
+    : public AggregateFunctionHoltWintersBase<Aggregator, AggregateFunctionHoltWinters<Aggregator, type>>
 {
+private:
+    using Base = AggregateFunctionHoltWintersBase<Aggregator, AggregateFunctionHoltWinters<Aggregator, type>>;
+
 public:
-    AggregateFunctionHoltWintersMultiplyFillGaps(const DataTypes & argument_types_, const Array & params)
-        : AggregateFunctionHoltWintersMultiply<Aggregator, true>(argument_types_, params)
+    AggregateFunctionHoltWinters(const DataTypes & argument_types_, const Array & params)
+        : Base(argument_types_, params)
+    {
+    }
+    
+    String getName() const override
+    {
+        return "HoltWinters" + HoltWintersTypeToString<type>();
+    }
+
+    void add(AggregateDataPtr __restrict place, const IColumn ** columns, size_t row_num, Arena *) const override
+    {
+        const auto & value = columns[0]->getFloat64(row_num);
+        this->data(place).add(value, this->getAlpha(), this->getBeta(), this->getGamma(), this->getSeasonsCount());
+    }
+
+    void serialize(ConstAggregateDataPtr __restrict place, WriteBuffer & buf, std::optional<size_t> version ) const override
+    {
+        static_cast<const Base*>(this)->serialize(place, buf, version);
+        auto & data = this->data(place);
+        writeBinary(data.count, buf);
+        writeBinary(data.first_value, buf);
+        writeBinary(data.first_trend, buf);
+    }
+
+    void deserialize(AggregateDataPtr __restrict place, ReadBuffer & buf, std::optional<size_t> version, Arena * arena) const override
+    {
+        static_cast<const Base*>(this)->deserialize(place, buf, version, arena);
+        auto & data = this->data(place);
+        readBinary(data.count, buf);
+        readBinary(data.first_value, buf);
+        readBinary(data.first_trend, buf);
+    }
+};
+
+template<typename Aggregator, HoltWintersType type>
+class AggregateFunctionHoltWintersWithTime
+    : public AggregateFunctionHoltWintersBase<Aggregator, AggregateFunctionHoltWintersWithTime<Aggregator, type>>
+{
+private:
+    using Base = AggregateFunctionHoltWintersBase<Aggregator, AggregateFunctionHoltWintersWithTime<Aggregator, type>>;
+
+public:
+    AggregateFunctionHoltWintersWithTime(const DataTypes & argument_types_, const Array & params)
+        : Base(argument_types_, params)
     {
     }
 
     String getName() const override
     {
-        return "HoltWintersMultiplyFillGaps";
+        return "HoltWintersWithTime" + HoltWintersTypeToString<type>();
     }
 
-    void merge(AggregateDataPtr __restrict place, ConstAggregateDataPtr rhs, Arena *) const override
+    void add(AggregateDataPtr __restrict place, const IColumn ** columns, size_t row_num, Arena *) const override
     {
-        try
-        {
-            this->data(place).merge(this->data(rhs), getAlpha(), getBeta(), getGamma(), getSeasonsCount());
-        }
-        catch (const std::invalid_argument & e)
-        {
-            throw Exception(ErrorCodes::INCORRECT_DATA, "Incorrect data given to aggregate function {}, {}",
-                getName(), e.what());
-        }
+        const auto & value = columns[0]->getFloat64(row_num);
+        const auto & timestamp = columns[1]->getUInt(row_num);
+        this->data(place).add(value, timestamp, this->getAlpha(), this->getBeta(), this->getGamma(), this->getSeasonsCount());
     }
+
+    void serialize(ConstAggregateDataPtr __restrict place, WriteBuffer & buf, std::optional<size_t> version) const override
+    {
+        static_cast<const Base*>(this)->serialize(place, buf, version);
+        auto & data = this->data(place);
+        writeBinary(data.timestamp, buf);
+        writeBinary(data.first_value.value, buf);
+        writeBinary(data.first_value.timestamp, buf);
+        writeBinary(data.first_value.was, buf);
+        writeBinary(data.first_trend.value, buf);
+        writeBinary(data.first_trend.timestamp, buf);
+        writeBinary(data.first_trend.was, buf);
+    }
+    
+    void deserialize(AggregateDataPtr __restrict place, ReadBuffer & buf, std::optional<size_t> version, Arena * arena) const override
+    {
+        static_cast<const Base*>(this)->deserialize(place, buf, version, arena);
+        auto & data = this->data(place);
+        readBinary(data.timestamp, buf);
+        readBinary(data.first_value.value, buf);
+        readBinary(data.first_value.timestamp, buf);
+        readBinary(data.first_value.was, buf);
+        readBinary(data.first_trend.value, buf);
+        readBinary(data.first_trend.timestamp, buf);
+        readBinary(data.first_trend.was, buf);
+    }    
 };
 
-template<typename Aggregator, bool have_time_column>
-class AggregateFunctionHoltWintersAddition
-    : public AggregateFunctionHoltWintersMultiply<Aggregator, have_time_column>
+template<typename Aggregator, HoltWintersType type>
+class AggregateFunctionHoltWintersFillGaps
+    : public AggregateFunctionHoltWintersWithTime<Aggregator, type>
 {
+private:
+    using Base = AggregateFunctionHoltWintersWithTime<Aggregator, type>;
 public:
-    AggregateFunctionHoltWintersAddition(const DataTypes & argument_types_, const Array & params)
-        : AggregateFunctionHoltWintersMultiply<Aggregator, have_time_column>(argument_types_, params)
+    AggregateFunctionHoltWintersFillGaps(const DataTypes & argument_types_, const Array & params)
+        : Base(argument_types_, params)
     {
     }
 
     String getName() const override
     {
-        return "HoltWintersAddition";
+        return "HoltWintersFillGaps" + HoltWintersTypeToString<type>();
     }
 };
 
-class AggregateFunctionHoltWintersAdditionFillGaps
-    : public AggregateFunctionHoltWintersMultiplyFillGaps<HoltWintersWithTimeFillGaps<HoltWintersType::Additional>>
-{
-public:
-    AggregateFunctionHoltWintersAdditionFillGaps(const DataTypes & argument_types_, const Array & params)
-        : AggregateFunctionHoltWintersMultiplyFillGaps<HoltWintersWithTimeFillGaps<HoltWintersType::Additional>>(argument_types_, params)
-    {
-    }
-
-    String getName() const override
-    {
-        return "HoltWintersAdditionFillGaps";
-    }
-};
-
-void registerAggregateFunctionHoltWintersMultiply(AggregateFunctionFactory & factory)
+void registerAggregateFunctionHoltWinters(AggregateFunctionFactory & factory)
 {
     factory.registerFunction("HoltWintersMultiply",
         [](const std::string & name, const DataTypes & argument_types, const Array & params, const Settings *) -> AggregateFunctionPtr
         {
-            assertArityAtMost<2>(name, argument_types);
-            assertArityAtLeast<1>(name, argument_types);
+            assertUnary(name, argument_types);
             if (!isNumber(*argument_types[0]))
             {
                 throw Exception(ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT,
                     "First argument for aggregate function {} must have numeric type, got {}",
                     name, argument_types[0]->getName());
             }
-            if (argument_types.size() > 1)
-            {
-                if (!isUnsignedInteger(*argument_types[1]))
-                {
-                    throw Exception(ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT,
-                        "Second argument for aggregate function {} must have unsigned integer type, got {}",
-                        name, argument_types[1]->getName());
-                }
-                return std::make_shared<AggregateFunctionHoltWintersMultiply<HoltWintersWithTime<HoltWintersType::Multiply>, true>>(argument_types, params);
-            }
-            return std::make_shared<AggregateFunctionHoltWintersMultiply<HoltWinters<HoltWintersType::Multiply>, false>>(argument_types, params);
+            return std::make_shared<AggregateFunctionHoltWinters<HoltWinters<HoltWintersType::Multiply>, HoltWintersType::Multiply>>(argument_types, params);
         });
-}
 
-void registerAggregateFunctionHoltWintersMultiplyFillGaps(AggregateFunctionFactory & factory)
-{
-    factory.registerFunction("HoltWintersMultiplyFillGaps",
+    factory.registerFunction("HoltWintersWithTimeMultiply",
         [](const std::string & name, const DataTypes & argument_types, const Array & params, const Settings *) -> AggregateFunctionPtr
         {
             assertBinary(name, argument_types);
@@ -330,40 +330,10 @@ void registerAggregateFunctionHoltWintersMultiplyFillGaps(AggregateFunctionFacto
                     "Second argument for aggregate function {} must have unsigned integer type, got {}",
                     name, argument_types[1]->getName());
             }
-            return std::make_shared<AggregateFunctionHoltWintersMultiplyFillGaps<HoltWintersWithTimeFillGaps<HoltWintersType::Multiply>>>(argument_types, params);
+            return std::make_shared<AggregateFunctionHoltWintersWithTime<HoltWintersWithTime<HoltWintersType::Multiply>, HoltWintersType::Multiply>>(argument_types, params);
         });
-}
 
-void registerAggregateFunctionHoltWintersAddition(AggregateFunctionFactory & factory)
-{
-    factory.registerFunction("HoltWintersAddition",
-        [](const std::string & name, const DataTypes & argument_types, const Array & params, const Settings *) -> AggregateFunctionPtr
-        {
-            assertArityAtMost<2>(name, argument_types);
-            assertArityAtLeast<1>(name, argument_types);
-            if (!isNumber(*argument_types[0]))
-            {
-                throw Exception(ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT,
-                    "First argument for aggregate function {} must have numeric type, got {}",
-                    name, argument_types[0]->getName());
-            }
-            if (argument_types.size() > 1)
-            {
-                if (!isUnsignedInteger(*argument_types[1]))
-                {
-                    throw Exception(ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT,
-                        "Second argument for aggregate function {} must have unsigned integer type, got {}",
-                        name, argument_types[1]->getName());
-                }
-                return std::make_shared<AggregateFunctionHoltWintersAddition<HoltWintersWithTime<HoltWintersType::Additional>, true>>(argument_types, params);
-            }
-            return std::make_shared<AggregateFunctionHoltWintersAddition<HoltWinters<HoltWintersType::Additional>, false>>(argument_types, params);
-        });
-}
-
-void registerAggregateFunctionHoltWintersAdditionFillGaps(AggregateFunctionFactory & factory)
-{
-    factory.registerFunction("HoltWintersAdditionFillGaps",
+    factory.registerFunction("HoltWintersFillGapsMultiply",
         [](const std::string & name, const DataTypes & argument_types, const Array & params, const Settings *) -> AggregateFunctionPtr
         {
             assertBinary(name, argument_types);
@@ -379,7 +349,58 @@ void registerAggregateFunctionHoltWintersAdditionFillGaps(AggregateFunctionFacto
                     "Second argument for aggregate function {} must have unsigned integer type, got {}",
                     name, argument_types[1]->getName());
             }
-            return std::make_shared<AggregateFunctionHoltWintersAdditionFillGaps>(argument_types, params);
+            return std::make_shared<AggregateFunctionHoltWintersFillGaps<HoltWintersWithTimeFillGaps<HoltWintersType::Multiply>, HoltWintersType::Multiply>>(argument_types, params);
+        });
+
+    factory.registerFunction("HoltWintersAdditional",
+        [](const std::string & name, const DataTypes & argument_types, const Array & params, const Settings *) -> AggregateFunctionPtr
+        {
+            assertUnary(name, argument_types);
+            if (!isNumber(*argument_types[0]))
+            {
+                throw Exception(ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT,
+                    "First argument for aggregate function {} must have numeric type, got {}",
+                    name, argument_types[0]->getName());
+            }
+            return std::make_shared<AggregateFunctionHoltWinters<HoltWinters<HoltWintersType::Additional>, HoltWintersType::Additional>>(argument_types, params);
+        });
+
+    factory.registerFunction("HoltWintersWithTimeAdditional",
+        [](const std::string & name, const DataTypes & argument_types, const Array & params, const Settings *) -> AggregateFunctionPtr
+        {
+            assertBinary(name, argument_types);
+            if (!isNumber(*argument_types[0]))
+            {
+                throw Exception(ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT,
+                    "First argument for aggregate function {} must have numeric type, got {}",
+                    name, argument_types[0]->getName());
+            }
+            if (!isUnsignedInteger(*argument_types[1]))
+            {
+                throw Exception(ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT,
+                    "Second argument for aggregate function {} must have unsigned integer type, got {}",
+                    name, argument_types[1]->getName());
+            }
+            return std::make_shared<AggregateFunctionHoltWintersWithTime<HoltWintersWithTime<HoltWintersType::Additional>, HoltWintersType::Additional>>(argument_types, params);
+        });
+
+    factory.registerFunction("HoltWintersFillGapsAdditional",
+        [](const std::string & name, const DataTypes & argument_types, const Array & params, const Settings *) -> AggregateFunctionPtr
+        {
+            assertBinary(name, argument_types);
+            if (!isNumber(*argument_types[0]))
+            {
+                throw Exception(ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT,
+                    "First argument for aggregate function {} must have numeric type, got {}",
+                    name, argument_types[0]->getName());
+            }
+            if (!isUnsignedInteger(*argument_types[1]))
+            {
+                throw Exception(ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT,
+                    "Second argument for aggregate function {} must have unsigned integer type, got {}",
+                    name, argument_types[1]->getName());
+            }
+            return std::make_shared<AggregateFunctionHoltWintersFillGaps<HoltWintersWithTimeFillGaps<HoltWintersType::Additional>, HoltWintersType::Additional>>(argument_types, params);
         });
 }
 
