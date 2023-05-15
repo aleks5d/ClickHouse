@@ -53,6 +53,8 @@ inline void assertArityAtMost(const std::string & name, const DataTypes & argume
 template<std::size_t minimal_arity>
 inline void assertArityAtLeast(const std::string & name, const DataTypes & argument_types)
 {
+    static_assert(minimal_arity > 0, "no point to use assertArityAtLeast with minimal_arity = 0");
+
     if (argument_types.size() >= minimal_arity)
         return;
     

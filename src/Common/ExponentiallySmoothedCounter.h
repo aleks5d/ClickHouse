@@ -307,7 +307,8 @@ struct ExponentiallySmoothedAlphaWithTime : DataHelper
         {
             return ExponentiallySmoothedAlphaWithTime(
                 value * scale_one_minus_value(alpha, current_time - timestamp),
-                current_time
+                current_time,
+                first_value
             );
         }
     }
@@ -438,7 +439,7 @@ struct ExponentiallySmoothedAlphaWithTimeFillGaps : DataHelper
     /// Add new value.
     void add(double new_value, uint64_t new_time, double alpha)
     {
-        if (new_time <= timestamp)
+        if (count > 0 && new_time <= timestamp)
         {
             throw std::logic_error("can't add new_value with new_timestamp less or euqual than timestamp");
         }

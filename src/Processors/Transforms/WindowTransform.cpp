@@ -1958,12 +1958,12 @@ struct WindowFunctionExponentialTimeDecayedAvg final : public StatefulWindowFunc
         Float64 decay_length;
 };
 
-enum ESAversion {
+enum TSAversion {
     WithTimeColumn,
     WithoutTimeColumn
 };
 
-template<typename State, ESAversion version>
+template<typename State, TSAversion version>
 struct WindowFunctionExponentialSmoothingAlpha : public StatefulWindowFunction<State>
 {
     static constexpr size_t ARGUMENT_VALUE = 0;
@@ -1990,7 +1990,7 @@ struct WindowFunctionExponentialSmoothingAlpha : public StatefulWindowFunction<S
                 this->getName(), alpha);
         }
 
-        if constexpr (version == ESAversion::WithTimeColumn)
+        if constexpr (version == TSAversion::WithTimeColumn)
         {
             if (argument_types_.size() != 2)
             {
@@ -2015,7 +2015,7 @@ struct WindowFunctionExponentialSmoothingAlpha : public StatefulWindowFunction<S
                 argument_types_[ARGUMENT_VALUE]->getName());
         }
         
-        if constexpr (version == ESAversion::WithTimeColumn)
+        if constexpr (version == TSAversion::WithTimeColumn)
         {
             if (!isNativeUnsignedInteger(argument_types_[ARGUMENT_TIME]))
             {
@@ -2055,7 +2055,7 @@ struct WindowFunctionExponentialSmoothingAlpha : public StatefulWindowFunction<S
             Float64 new_value = WindowFunctionHelpers::getValue<Float64>(transform, function_index, ARGUMENT_VALUE, i);
             try
             {
-                if constexpr (version == ESAversion::WithTimeColumn)
+                if constexpr (version == TSAversion::WithTimeColumn)
                 {
                     UInt64 new_time = WindowFunctionHelpers::getValue<UInt64>(transform, function_index, ARGUMENT_TIME, i);
                     state.add(new_value, new_time, alpha);
@@ -2669,21 +2669,21 @@ void registerWindowFunctions(AggregateFunctionFactory & factory)
     factory.registerFunction("exponentialSmoothingAlpha", {[](const std::string & name,
             const DataTypes & argument_types, const Array & parameters, const Settings *)
         {
-            return std::make_shared<WindowFunctionExponentialSmoothingAlpha<ExponentiallySmoothedAlpha, ESAversion::WithoutTimeColumn>>(
+            return std::make_shared<WindowFunctionExponentialSmoothingAlpha<ExponentiallySmoothedAlpha, TSAversion::WithoutTimeColumn>>(
                 name, argument_types, parameters);
         }, properties});
 
     factory.registerFunction("exponentialSmoothingAlphaWithTime", {[](const std::string & name,
             const DataTypes & argument_types, const Array & parameters, const Settings *)
         {
-            return std::make_shared<WindowFunctionExponentialSmoothingAlpha<ExponentiallySmoothedAlphaWithTime, ESAversion::WithTimeColumn>>(
+            return std::make_shared<WindowFunctionExponentialSmoothingAlpha<ExponentiallySmoothedAlphaWithTime, TSAversion::WithTimeColumn>>(
                 name, argument_types, parameters);
         }, properties});
     
     factory.registerFunction("exponentialSmoothingAlphaWithTimeFillGaps", {[](const std::string & name,
             const DataTypes & argument_types, const Array & parameters, const Settings *)
         {
-            return std::make_shared<WindowFunctionExponentialSmoothingAlpha<ExponentiallySmoothedAlphaWithTimeFillGaps, ESAversion::WithTimeColumn>>(
+            return std::make_shared<WindowFunctionExponentialSmoothingAlpha<ExponentiallySmoothedAlphaWithTimeFillGaps, TSAversion::WithTimeColumn>>(
                 name, argument_types, parameters);
         }, properties});
 
