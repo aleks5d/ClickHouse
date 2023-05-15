@@ -6,6 +6,7 @@
 #include <Common/Arena.h>
 #include <Common/FieldVisitorConvertToNumber.h>
 #include <Common/FieldVisitorsAccurateComparison.h>
+#include <Common/ExponentiallySmoothedCounter.h>
 #include <Columns/ColumnLowCardinality.h>
 #include <base/arithmeticOverflow.h>
 #include <Columns/ColumnConst.h>
@@ -1519,6 +1520,13 @@ namespace recurrent_detail
         return column->getFloat64(row.row);
     }
 
+    template<> UInt64 getValue<UInt64>(const WindowTransform * transform, size_t function_index, size_t column_index, RowNumber row)
+    {
+        const auto & workspace = transform->workspaces[function_index];
+        const auto & column = transform->blockAt(row.block).input_columns[workspace.argument_column_indices[column_index]];
+        return column->getUInt(row.row);
+    }
+
     template<typename T> void setValueToOutputColumn(const WindowTransform * /*transform*/, size_t /*function_index*/, T /*value*/)
     {
         throw Exception(ErrorCodes::NOT_IMPLEMENTED,
@@ -1948,6 +1956,130 @@ struct WindowFunctionExponentialTimeDecayedAvg final : public StatefulWindowFunc
 
     private:
         Float64 decay_length;
+};
+
+enum ESAversion {
+    WithTimeColumn,
+    WithoutTimeColumn
+};
+
+template<typename State, ESAversion version>
+struct WindowFunctionExponentialSmoothingAlpha : public StatefulWindowFunction<State>
+{
+    static constexpr size_t ARGUMENT_VALUE = 0;
+    static constexpr size_t ARGUMENT_TIME = 1;
+
+    WindowFunctionExponentialSmoothingAlpha(const std::string & name_,
+            const DataTypes & argument_types_, const Array & parameters_)
+        : StatefulWindowFunction<State>(name_, argument_types_, parameters_, std::make_shared<DataTypeFloat64>())
+    {
+        if (parameters_.size() != 1)
+        {
+            throw Exception(ErrorCodes::BAD_ARGUMENTS,
+                "Function {} takes exactly one parameter: alpha", this->getName());
+        }
+        alpha = applyVisitor(FieldVisitorConvertToNumber<Float64>(), parameters_[0]);
+        if (alpha < 0)
+        {
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Aggregate function {} requires non negative alpha, got {}", 
+                this->getName(), alpha);
+        }
+        if (alpha > 1)
+        {
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Aggregate function {} requires alpha not greater one, got {}",
+                this->getName(), alpha);
+        }
+
+        if constexpr (version == ESAversion::WithTimeColumn)
+        {
+            if (argument_types_.size() != 2)
+            {
+                throw Exception(ErrorCodes::BAD_ARGUMENTS,
+                    "Function {} takes exactly two arguments", this->getName());
+            }
+        }
+        else
+        {
+            if (argument_types_.size() != 1)
+            {
+                throw Exception(ErrorCodes::BAD_ARGUMENTS,
+                    "Function {} takes exactly one argument", this->getName());
+            }
+        }
+
+        if (!isNumber(argument_types_[ARGUMENT_VALUE]))
+        {
+            throw Exception(ErrorCodes::BAD_ARGUMENTS,
+                "Argument {} must be a number, '{}' given",
+                ARGUMENT_VALUE,
+                argument_types_[ARGUMENT_VALUE]->getName());
+        }
+        
+        if constexpr (version == ESAversion::WithTimeColumn)
+        {
+            if (!isNativeUnsignedInteger(argument_types_[ARGUMENT_TIME]))
+            {
+                throw Exception(ErrorCodes::BAD_ARGUMENTS,
+                    "Argument {} must be a unsigned integer, '{}' given",
+                    ARGUMENT_TIME,
+                    argument_types_[ARGUMENT_TIME]->getName());
+            }
+        }
+    }
+    
+    bool allocatesMemoryInArena() const override { return false; }
+
+    void windowInsertResultInto(const WindowTransform * transform,
+        size_t function_index) override
+    {
+        const auto & workspace = transform->workspaces[function_index];
+        auto & state = this->getState(workspace);
+
+        auto start = transform->frame_start;
+
+        // we can continue previous state.
+        // only if same start, because we can't remove/add to begin.
+        // only with greater end, because we can't remove from end.
+        if (transform->prev_frame_start == transform->frame_start
+            && transform->prev_frame_end <= transform->frame_end)
+        {
+            start = transform->prev_frame_end;
+        }
+        else // otherwise - clear state and start from begin
+        {
+            state = State();
+        }
+
+        for (RowNumber i = start; i < transform->frame_end; transform->advanceRowNumber(i))
+        {
+            Float64 new_value = WindowFunctionHelpers::getValue<Float64>(transform, function_index, ARGUMENT_VALUE, i);
+            try
+            {
+                if constexpr (version == ESAversion::WithTimeColumn)
+                {
+                    UInt64 new_time = WindowFunctionHelpers::getValue<UInt64>(transform, function_index, ARGUMENT_TIME, i);
+                    state.add(new_value, new_time, alpha);
+                }
+                else
+                {
+                    state.add(new_value, alpha);
+                }
+            }
+            catch (const std::logic_error & e)
+            {
+                throw Exception(ErrorCodes::INCORRECT_DATA,
+                    "Incorrect data given to aggregate function {}, {}",
+                    this->getName(),
+                    e.what()
+                );
+            }
+        }
+
+        WindowFunctionHelpers::setValueToOutputColumn<Float64>(transform, function_index, state.get(alpha));
+    }
+    
+    private:
+        Float64 alpha;
 };
 
 struct WindowFunctionRowNumber final : public WindowFunction
@@ -2531,6 +2663,27 @@ void registerWindowFunctions(AggregateFunctionFactory & factory)
             const DataTypes & argument_types, const Array & parameters, const Settings *)
         {
             return std::make_shared<WindowFunctionExponentialTimeDecayedAvg>(
+                name, argument_types, parameters);
+        }, properties});
+    
+    factory.registerFunction("exponentialSmoothingAlpha", {[](const std::string & name,
+            const DataTypes & argument_types, const Array & parameters, const Settings *)
+        {
+            return std::make_shared<WindowFunctionExponentialSmoothingAlpha<ExponentiallySmoothedAlpha, ESAversion::WithoutTimeColumn>>(
+                name, argument_types, parameters);
+        }, properties});
+
+    factory.registerFunction("exponentialSmoothingAlphaWithTime", {[](const std::string & name,
+            const DataTypes & argument_types, const Array & parameters, const Settings *)
+        {
+            return std::make_shared<WindowFunctionExponentialSmoothingAlpha<ExponentiallySmoothedAlphaWithTime, ESAversion::WithTimeColumn>>(
+                name, argument_types, parameters);
+        }, properties});
+    
+    factory.registerFunction("exponentialSmoothingAlphaWithTimeFillGaps", {[](const std::string & name,
+            const DataTypes & argument_types, const Array & parameters, const Settings *)
+        {
+            return std::make_shared<WindowFunctionExponentialSmoothingAlpha<ExponentiallySmoothedAlphaWithTimeFillGaps, ESAversion::WithTimeColumn>>(
                 name, argument_types, parameters);
         }, properties});
 
