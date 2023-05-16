@@ -1555,12 +1555,12 @@ namespace recurrent_detail
         }
     }
     
-    template<typename T> bool setTupleToOutputColumnWithIndex(const WindowTransform * /* transform */, size_t /* function_index */, size_t /* index */, T /* value */)
+    template<typename T> bool setTupleToOutputColumnWithIndex(const WindowTransform * /* transform */, size_t /* function_index */, size_t /* index */, const T & /* value */)
     {
         return false;
     }
 
-    template<> bool setTupleToOutputColumnWithIndex<Float64>(const WindowTransform * transform, size_t function_index, size_t index, Float64 value)
+    template<> bool setTupleToOutputColumnWithIndex<Float64>(const WindowTransform * transform, size_t function_index, size_t index, const Float64 & value)
     {
         auto current_row = transform->current_row;
         const auto & current_block = transform->blockAt(current_row);
@@ -1568,11 +1568,10 @@ namespace recurrent_detail
         ColumnTuple & to_tuple = assert_cast<ColumnTuple &>(to);
 
         assert_cast<ColumnFloat64 &>(to_tuple.getColumn(index)).getData().push_back(value);
-        std::cout << index << std::endl;
         return true;
     }
 
-    template<size_t index, typename T, typename... Args> bool setTupleToOutputColumn(const WindowTransform * transform, size_t function_index, T value, Args... args)
+    template<size_t index, typename T, typename... Args> bool setTupleToOutputColumn(const WindowTransform * transform, size_t function_index, const T & value, Args... args)
     {
         if constexpr (sizeof...(Args) == 0)
         {
@@ -1585,7 +1584,7 @@ namespace recurrent_detail
         }
     }
 
-    template<typename T, typename... Args> void setTupleToOutputColumn(const WindowTransform * transform, size_t function_index, T value, Args... args)
+    template<typename T, typename... Args> void setTupleToOutputColumn(const WindowTransform * transform, size_t function_index, const T & value, Args... args)
     {
         if (!setTupleToOutputColumn<0, T, Args...>(transform, function_index, value, args...))
         {
@@ -2218,10 +2217,12 @@ struct WindowFunctionHolt : public StatefulWindowFunction<State>
     
     static DataTypePtr createResultType()
     {
-        return std::make_shared<DataTypeTuple>(
+        DataTypes types
+        {
             std::make_shared<DataTypeNumber<Float64>>(),
             std::make_shared<DataTypeNumber<Float64>>()
-        );
+        };
+        return std::make_shared<DataTypeTuple>(std::move(types));
     } 
 
     bool allocatesMemoryInArena() const override { return false; }
