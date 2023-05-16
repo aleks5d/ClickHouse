@@ -1568,7 +1568,7 @@ namespace recurrent_detail
         ColumnTuple & to_tuple = assert_cast<ColumnTuple &>(to);
 
         assert_cast<ColumnFloat64 &>(to_tuple.getColumn(index)).getData().push_back(value);
-
+        std::cout << index << std::endl;
         return true;
     }
 
@@ -1581,7 +1581,7 @@ namespace recurrent_detail
         else
         {
             return setTupleToOutputColumnWithIndex<T>(transform, function_index, index, value)
-                || setTupleToOutputColumn<index + 1, Args...>(transform, function_index, args...);
+                && setTupleToOutputColumn<index + 1, Args...>(transform, function_index, args...);
         }
     }
 
@@ -2218,21 +2218,9 @@ struct WindowFunctionHolt : public StatefulWindowFunction<State>
     
     static DataTypePtr createResultType()
     {
-        DataTypes types
-        {
+        return std::make_shared<DataTypeTuple>(
             std::make_shared<DataTypeNumber<Float64>>(),
             std::make_shared<DataTypeNumber<Float64>>()
-        };
-
-        Strings names
-        {
-            "next value",
-            "trend"
-        };
-
-        return std::make_shared<DataTypeTuple>(
-            std::move(types), 
-            std::move(names)
         );
     } 
 
