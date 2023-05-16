@@ -650,6 +650,11 @@ struct Holt : DataHelper
         return value + trend;
     }
 
+    double get_trend([[maybe_unused]] double alpha, [[maybe_unused]] double beta) const
+    {
+        return trend;
+    }
+
     bool less(const Holt & other, [[maybe_unused]] double alpha, [[maybe_unused]] double beta) const
     {
         uint64_t max_count = std::max(count, other.count);
@@ -789,6 +794,11 @@ struct HoltWithTime : DataHelper
         return value + trend;
     }
 
+    double get_trend([[maybe_unused]] double alpha, [[maybe_unused]] double beta) const
+    {
+        return trend;
+    }
+
     bool less(const HoltWithTime & other, [[maybe_unused]] double alpha, [[maybe_unused]] double beta) const
     {
         uint64_t max_time = std::max(timestamp, other.timestamp);
@@ -905,6 +915,11 @@ struct HoltWithTimeFillGaps : DataHelper
             throw std::logic_error("Can't get for value less than timestamp");
         }
         return value + trend * (current_time - timestamp);
+    }
+
+    double get_trend([[maybe_unused]] double alpha, [[maybe_unused]] double beta) const
+    {
+        return trend;
     }
 
     bool less(const HoltWithTimeFillGaps & other, [[maybe_unused]] double alpha, [[maybe_unused]] double beta) const
