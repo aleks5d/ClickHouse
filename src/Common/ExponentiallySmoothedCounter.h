@@ -138,12 +138,12 @@ struct DataHelper
     /// optional value with timestamp
     struct ovt {
         double value = 0;
-        unsigned long long int timestamp = 0;
+        uint64_t timestamp = 0;
         bool was = false;
 
         ovt() = default;
 
-        ovt(double value_, unsigned long long int timestamp_)
+        ovt(double value_, uint64_t timestamp_)
             : value(value_), timestamp(timestamp_), was(true)
         {
         }
