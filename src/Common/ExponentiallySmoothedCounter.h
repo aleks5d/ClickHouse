@@ -564,56 +564,36 @@ struct ExponentiallySmoothedAlphaWithTimeFillGaps : DataHelper
     }
 };
 
-struct Holt
+struct Holt : DataHelper
 {
     double value = 0;
 
     double trend = 0;
 
-    unsigned long long int count = 0;
-
-    double first_value;
-
-    double first_trend;
+    uint64_t count = 0;
 
     Holt() = default;
 
     Holt(double current_value)
-        : value(current_value), trend(0), count(1), first_value(current_value), first_trend(0)
+        : value(current_value), trend(0), count(1)
     {
     }
 
-    Holt(double current_value, double current_trend, unsigned long long int current_count, double first_value_, double first_trend_)
-        : value(current_value), trend(current_trend), count(current_count), first_value(first_value_), first_trend(first_trend_)
+    Holt(double current_value, double current_trend, uint64_t current_count)
+        : value(current_value), trend(current_trend), count(current_count)
     {
     }
 
-    static double scale(unsigned long long int count_passed, double value)
+    Holt remap(uint64_t current_count, double alpha, double beta) const
     {
-        /// Using binary power because of low precision of pow().
-        double result = 1;
-        value = 1 - value;
-        while (count_passed)
+        if (current_count < count)
         {
-            if (count_passed & 1)
-            {
-                result *= value;
-            }
-            count_passed >>= 1;
-            value *= value;
+            throw std::logic_error("can't remap for value less or equal than count");    
         }
-        return result;
-    }
-
-    Holt remap(unsigned long long int current_count, double alpha, double beta) const
-    {
-        // approximation formula for remapping
         return Holt(
-            value * scale(current_count - count, alpha), // value
-            trend * scale(current_count - count, beta), // trend
-            current_count, // count
-            first_value, // first_trend
-            first_trend // first_trend
+            value * scale_one_minus_value(alpha, current_count - count),
+            trend * scale_one_minus_value(beta, current_count - count),
+            current_count
         );
     }
 
@@ -623,30 +603,27 @@ struct Holt
         {
             return a.count ? a : b;
         }
-        else if (b.count == 1) // careful addition of one value
+        if (b.count == 1)
         {
-            double new_value = alpha * b.value + (1 - alpha) * (a.value + a.trend);
-            // if a.count == 1 then no actual trend, so we are going to initialize it
-            // otherwise we are going to recalculate it
-            return Holt(
-                new_value, // value
-                a.count == 1 ? b.value - a.value : beta * (new_value - a.value) + (1 - beta) * a.trend, // trend
-                a.count + b.count, // count
-                a.first_value, // first_value
-                a.count == 1 ? b.value - a.value : a.first_trend // first_trend
-            );
+            if (a.count == 1)
+            {
+                return Holt(
+                    alpha * b.value + (1 - alpha) * a.value,
+                    b.value - a.value,
+                    2
+                );
+            }
+            else
+            {
+                double new_value = alpha * b.value + (1 - alpha) * (a.value + a.trend);
+                return Holt(
+                    new_value,
+                    beta * (new_value - a.value) + (1 - beta) * a.trend,
+                    a.count + 1
+                );
+            }
         }
-        else // merge two blocks. Using of approximate formulas
-        {
-            auto remapped_a = a.remap(a.count + b.count, alpha, beta);
-            return Holt(
-                remapped_a.value + b.value - b.first_value * scale(b.count, alpha), // value
-                remapped_a.trend + b.trend - b.first_trend * scale(b.count, beta), // trend
-                remapped_a.count, // count
-                remapped_a.first_value, // first_value
-                remapped_a.first_trend // first_trend
-            );
-        }
+        throw std::logic_error("Can't merge with counter with count > 1");
     }
 
     void merge(const Holt & other, double alpha, double beta)
@@ -659,119 +636,63 @@ struct Holt
         merge(Holt(new_value), alpha, beta);
     }
 
-    double get(unsigned long long int current_count, [[maybe_unused]] double alpha, [[maybe_unused]] double beta) const
+    double get(uint64_t current_count, [[maybe_unused]] double alpha, [[maybe_unused]] double beta) const
     {
+        if (current_count < count)
+        {
+            throw std::logic_error("Can't get for value less than count");
+        }
         return value + trend * (current_count - count);
     }
     
     double get([[maybe_unused]] double alpha, [[maybe_unused]] double beta) const
     {
-        return get(count + 1, alpha, beta);
+        return value + trend;
     }
 
     bool less(const Holt & other, [[maybe_unused]] double alpha, [[maybe_unused]] double beta) const
     {
-        unsigned long long int max_count = std::max(count, other.count);
+        uint64_t max_count = std::max(count, other.count);
         return get(max_count, alpha, beta) < other.get(max_count, alpha, beta);
     }
 };
 
-struct HoltWithTime
+struct HoltWithTime : DataHelper
 {
     double value = 0;
 
     double trend = 0;
 
-    unsigned long long int timestamp = 0;
+    uint64_t timestamp = 0;
 
-    // optional value with timestamp
-    struct ovt {
-        double value = 0;
-        unsigned long long int timestamp = 0;
-        bool was = false;
-
-        ovt() = default;
-
-        ovt(double value_, unsigned long long int timestamp_)
-            : value(value_), timestamp(timestamp_), was(true)
-        {
-        }
-
-        static ovt min_or_merge(const ovt & a, const ovt & b)
-        {
-            if (!a.was || !b.was)
-            {
-                return a.was ? a : b;
-            }
-            else if (a.timestamp == b.timestamp)
-            {
-                return ovt(a.value + b.value, a.timestamp);
-            }
-            else
-            {
-                return a.timestamp < b.timestamp ? a : b;
-            }
-        }
-
-        static ovt max_or_empty(const ovt & a, const ovt & b)
-        {
-            if (!a.was || !b.was)
-            {
-                return ovt();
-            }
-            else if (a.timestamp == b.timestamp)
-            {
-                return ovt();
-            }
-            else
-            {
-                return a.timestamp > b.timestamp ? a : b;
-            }
-        }
-    };
-    
     ovt first_value;
 
     ovt first_trend;
 
     HoltWithTime() = default;
 
-    HoltWithTime(double current_value, double current_trend, unsigned long long int current_timestamp, ovt first_value_, ovt first_trend_)
+    HoltWithTime(double current_value, double current_trend, uint64_t current_timestamp, ovt first_value_, ovt first_trend_)
         : value(current_value), trend(current_trend), timestamp(current_timestamp), first_value(first_value_), first_trend(first_trend_)
     {
     }
 
-    HoltWithTime(double current_value, unsigned long long int current_timestamp)
+    HoltWithTime(double current_value, uint64_t current_timestamp)
         : value(current_value), trend(0), timestamp(current_timestamp), first_value(current_value, current_timestamp)
     {
     }
 
-    static double scale(unsigned long long int time_passed, double value)
+    HoltWithTime remap(uint64_t current_time, double alpha, double beta) const
     {
-        /// Using binary power because of low precision of pow().
-        double result = 1;
-        value = 1 - value;
-        while (time_passed)
+        if (current_time < timestamp)
         {
-            if (time_passed & 1)
-            {
-                result *= value;
-            }
-            time_passed >>= 1;
-            value *= value;
+            throw std::logic_error("Can't remap for value less than timestamp");
         }
-        return result;
-    }
-
-    HoltWithTime remap(unsigned long long int current_time, double alpha, double beta) const
-    {
-        // approximation formula for remapping
         return HoltWithTime(
-            value * scale(current_time - timestamp, alpha), // value
-            trend * scale(current_time - timestamp, beta), // trend
-            current_time, // timestamp
-            first_value, // first_value
-            first_trend // first_trend
+            value * scale_one_minus_value(alpha, current_time - timestamp),
+            trend * scale_one_minus_value(beta, current_time - timestamp),
+            current_time,
+            first_value,
+            first_trend
         );
     }
 
@@ -781,54 +702,67 @@ struct HoltWithTime
         {
             return a.first_value.was ? a : b;
         }
-        else if (!a.first_trend.was && !b.first_trend.was) // careful addition of second value 
+        if (!b.first_trend.was)
         {
-            if (a.timestamp == b.timestamp) // same timestamps, so we can't calculate trend
+            if (!a.first_trend.was)
             {
-                return HoltWithTime(
-                    a.value + b.value, // value
-                    a.trend + b.trend, // trend
-                    a.timestamp, // timestamp
-                    ovt::min_or_merge(a.first_value, b.first_value), // first_value
-                    ovt::min_or_merge(a.first_trend, b.first_trend) // first_trend
-                );
+                if (a.timestamp == b.timestamp)
+                {
+                    return HoltWithTime(
+                        a.value + b.value,
+                        a.timestamp
+                    );
+                }
+                else
+                {
+                    uint64_t max_time = std::max(a.timestamp, b.timestamp);
+                    auto remapped_a = a.remap(max_time, alpha, beta);
+                    auto remapped_b = b.remap(max_time, alpha, beta);
+                    ovt max_value = ovt::max_or_empty(a.first_value, b.first_value);
+                    ovt min_value = ovt::min_or_merge(a.first_value, b.first_value);
+                    double trend = (max_value.value - min_value.value) / (max_value.timestamp - min_value.timestamp);
+                    return HoltWithTime(
+                        remapped_a.value + remapped_b.value
+                            - max_value.value * (1 - alpha),
+                        trend,
+                        max_time,
+                        min_value,
+                        ovt(trend, max_time)
+                    );
+                }
             }
             else
             {
-                unsigned long long int max_time = std::max(a.timestamp, b.timestamp);
-                auto remapped_a = a.remap(max_time, alpha, beta);
-                auto remapped_b = b.remap(max_time, alpha, beta);
-                ovt max_value = ovt::max_or_empty(a.first_value, b.first_value);
-                ovt min_value = ovt::min_or_merge(a.first_value, b.first_value);
-                double trend = (max_value.value - min_value.value) / (max_value.timestamp - min_value.timestamp);
-                return HoltWithTime(
-                    remapped_a.value + remapped_b.value
-                        - max_value.value * (1 - alpha), // value
-                    trend, // trend
-                    max_time, // timestamp
-                    min_value, // first_value
-                    ovt(trend, max_value.timestamp) // first_trend
-                );
+                if (a.timestamp == b.timestamp)
+                {
+                    return HoltWithTime(
+                        a.value + alpha * b.value,
+                        a.trend + alpha * beta * b.value,
+                        a.timestamp,
+                        a.first_value,
+                        a.first_trend
+                    );
+                }
+                else
+                {
+                    uint64_t max_time = std::max(a.timestamp, b.timestamp);
+                    auto remapped_a = a.remap(max_time, alpha, beta);
+                    auto remapped_b = b.remap(max_time, alpha, beta);
+                    ovt excess_value = ovt::max_or_empty(a.first_value, b.first_value);
+                    ovt excess_trend = ovt::max_or_empty(a.first_trend, b.first_trend);
+                    return HoltWithTime(
+                        remapped_a.value + remapped_b.value
+                            - excess_value.value * scale_one_minus_value(alpha, max_time - excess_value.timestamp) * (1 - alpha),
+                        remapped_a.trend + remapped_b.trend
+                            - excess_trend.value * scale_one_minus_value(beta, max_time - excess_trend.timestamp) * (1 - beta),
+                        max_time,
+                        ovt::min_or_merge(a.first_value, b.first_value),
+                        ovt::min_or_merge(a.first_trend, b.first_trend)
+                    );
+                }
             }
         }
-        else
-        {
-            // approximation formula for merge without filling gaps
-            unsigned long long int max_time = std::max(a.timestamp, b.timestamp);
-            auto remapped_a = a.remap(max_time, alpha, beta);
-            auto remapped_b = b.remap(max_time, alpha, beta);
-            ovt additional_value = ovt::max_or_empty(a.first_value, b.first_value);
-            ovt additional_trend = ovt::max_or_empty(a.first_trend, b.first_trend);
-            return HoltWithTime(
-                remapped_a.value + remapped_b.value
-                    - additional_value.value * scale(max_time - additional_value.timestamp, alpha), // value
-                remapped_a.trend + remapped_b.trend
-                    - additional_trend.value * scale(max_time - additional_trend.timestamp, beta), // trend
-                max_time, // timestamp
-                ovt::min_or_merge(a.first_value, b.first_value), // first_value
-                ovt::min_or_merge(a.first_trend, b.first_trend) // first_trend
-            );
-        }
+        throw std::logic_error("Can't merge with counter with count > 1");
     }
 
     void merge(const HoltWithTime & other, double alpha, double beta)
@@ -836,143 +770,98 @@ struct HoltWithTime
         *this = merge(*this, other, alpha, beta);
     }
 
-    void add(double new_value, unsigned long long int new_timestamp, double alpha, double beta)
+    void add(double new_value, uint64_t new_timestamp, double alpha, double beta)
     {
         merge(HoltWithTime(new_value, new_timestamp), alpha, beta);
     }
 
-    double get(unsigned long long int current_time, [[maybe_unused]] double alpha, [[maybe_unused]] double beta) const
+    double get(uint64_t current_time, [[maybe_unused]] double alpha, [[maybe_unused]] double beta) const
     {
+        if (current_time < timestamp)
+        {
+            throw std::logic_error("Can't get for value less than timestamp");
+        }
         return value + trend * (current_time - timestamp);
     }
 
     double get([[maybe_unused]] double alpha, [[maybe_unused]] double beta) const
     {
-        return get(timestamp + 1, alpha, beta);
+        return value + trend;
     }
 
     bool less(const HoltWithTime & other, [[maybe_unused]] double alpha, [[maybe_unused]] double beta) const
     {
-        unsigned long long int max_time = std::max(timestamp, other.timestamp);
+        uint64_t max_time = std::max(timestamp, other.timestamp);
         return get(max_time, alpha, beta) < other.get(max_time, alpha, beta);
     }
 };
 
-struct HoltWithTimeFillGaps
+struct HoltWithTimeFillGaps : DataHelper
 {
     double value = 0;
 
     double trend = 0;
 
-    unsigned long long int timestamp = 0;
-
-    // optional value with timestamp
-    using ovt = HoltWithTime::ovt;
+    uint64_t timestamp = 0;
     
-    ovt first_value;
-
-    ovt first_trend;
+    uint64_t count = 0;
 
     HoltWithTimeFillGaps() = default;
 
-    HoltWithTimeFillGaps(double current_value, double current_trend, unsigned long long int current_timestamp, ovt first_value_, ovt first_trend_)
-        : value(current_value), trend(current_trend), timestamp(current_timestamp), first_value(first_value_), first_trend(first_trend_)
+    HoltWithTimeFillGaps(double current_value, double current_trend, uint64_t current_timestamp, uint64_t current_count)
+        : value(current_value), trend(current_trend), timestamp(current_timestamp), count(current_count)
     {
     }
 
-    HoltWithTimeFillGaps(double current_value, unsigned long long int current_timestamp)
-        : value(current_value), trend(0), timestamp(current_timestamp), first_value(current_value, current_timestamp)
+    HoltWithTimeFillGaps(double current_value, uint64_t current_timestamp)
+        : value(current_value), timestamp(current_timestamp), count(1)
     {
     }
 
-    static double scale(unsigned long long int time_passed, double value)
+    HoltWithTimeFillGaps remap(uint64_t current_time, double alpha, double beta) const
     {
-        /// Using binary power because of low precision of pow().
-        double result = 1;
-        value = 1 - value;
-        while (time_passed)
+        if (current_time < timestamp)
         {
-            if (time_passed & 1)
-            {
-                result *= value;
-            }
-            time_passed >>= 1;
-            value *= value;
+            throw std::logic_error("Can't remap for value less than timestamp");
         }
-        return result;
-    }
-
-    HoltWithTimeFillGaps remap(unsigned long long int current_time, double alpha, double beta) const
-    {
-        // approximation formula for remapping
         return HoltWithTimeFillGaps(
-            value * scale(current_time - timestamp, alpha), // value
-            trend * scale(current_time - timestamp, beta), // trend
-            current_time, // timestamp
-            first_value, // first_value
-            first_trend // first_trend
+            value * scale_one_minus_value(alpha, current_time - timestamp),
+            trend * scale_one_minus_value(beta, current_time - timestamp),
+            current_time,
+            count
         );
-    }
-
-    /// merge two non-empty states if timestamps in a greater than in b
-    static HoltWithTimeFillGaps merge_ordered(const HoltWithTimeFillGaps & a, const HoltWithTimeFillGaps & b, double alpha, double beta)
-    {
-        if (!a.first_trend.was && !b.first_trend.was) // two alone values
-        {
-            double trend = (a.value - b.value);
-            bool is_next = (a.timestamp == b.timestamp + 1);
-            return HoltWithTimeFillGaps(
-                a.value * alpha + b.value * (1 - alpha), // value
-                trend * (is_next ? 1.0 : beta), // trend
-                a.timestamp, // timestamp
-                b.first_value, // first_value
-                is_next ? ovt(trend, a.timestamp) : ovt(0, b.timestamp) // first_trend
-            );
-        }
-        else if (!a.first_trend.was) // add alone value
-        {
-            auto predicted_b = b.predict_until(a.timestamp, alpha, beta);
-            double new_value = alpha * a.value + (1 - alpha) * (predicted_b.value + predicted_b.trend);
-            return HoltWithTimeFillGaps(
-                new_value, // value
-                beta * (new_value - b.value) + (1 - beta) * b.trend, // trend
-                a.timestamp, // timestamp
-                b.first_value, // first_value
-                b.first_trend // first_trend
-            );
-        }
-        else // merge two blocks. Using of approximation formulas
-        {
-            auto predicted_b = b.predict_until(a.first_value.timestamp, alpha, beta);
-            predicted_b.remap(a.timestamp, alpha, beta);
-            return HoltWithTimeFillGaps(
-                a.value + predicted_b.value - a.first_value.value * scale(a.timestamp - a.first_value.timestamp, alpha), // value
-                a.trend + predicted_b.trend - a.first_trend.value * scale(a.timestamp - a.first_trend.timestamp, beta), // trend
-                a.timestamp, // timestamp
-                b.first_value, // first_value
-                b.first_trend // first_trend
-            );
-        }
     }
 
     static HoltWithTimeFillGaps merge(const HoltWithTimeFillGaps & a, const HoltWithTimeFillGaps & b, double alpha, double beta)
     {
-        if (!a.first_value.was || !b.first_value.was)
+        if (!a.count || !b.count)
         {
-            return a.first_value.was ? a : b;
+            return a.count ? a : b;
         }
-        else if (a.first_value.timestamp > b.timestamp)
+        if (b.count == 1)
         {
-            return merge_ordered(a, b, alpha, beta);
+            auto predicted_a = a.predict_until(b.timestamp, alpha, beta);
+            if (predicted_a.count == 1)
+            {
+                return HoltWithTimeFillGaps(
+                    alpha * b.value + (1 - alpha) * predicted_a.value,
+                    b.value - a.value,
+                    b.timestamp,
+                    2
+                );
+            }
+            else
+            {
+                double new_value = alpha * b.value + (1 - alpha) * (predicted_a.value + predicted_a.trend);
+                return HoltWithTimeFillGaps(
+                    new_value,
+                    beta * (new_value - predicted_a.value) + (1 - beta) * predicted_a.trend,
+                    b.timestamp,
+                    a.count + 1
+                );
+            }
         }
-        else if (b.first_value.timestamp > a.timestamp)
-        {
-            return merge_ordered(b, a, alpha, beta);
-        }
-        else
-        {
-            throw std::invalid_argument("timestamps are not sorted");
-        }
+        throw std::logic_error("Can't merge with counter with count > 1");
     }
 
     void merge(const HoltWithTimeFillGaps & other, double alpha, double beta)
@@ -980,7 +869,7 @@ struct HoltWithTimeFillGaps
         *this = merge(*this, other, alpha, beta);
     }
 
-    void add(double new_value, unsigned long long int new_timestamp, double alpha, double beta)
+    void add(double new_value, uint64_t new_timestamp, double alpha, double beta)
     {
         merge(HoltWithTimeFillGaps(new_value, new_timestamp), alpha, beta);
     }
@@ -990,8 +879,12 @@ struct HoltWithTimeFillGaps
         add(value + trend, timestamp + 1, alpha, beta);
     }
 
-    HoltWithTimeFillGaps predict_until(unsigned long long int current_time, double alpha, double beta) const
+    HoltWithTimeFillGaps predict_until(uint64_t current_time, double alpha, double beta) const
     {
+        if (current_time <= timestamp)
+        {
+            throw std::logic_error("Can't predict_until for value less or equal timestamp");
+        }
         auto copy_of_me = *this;
         while (copy_of_me.timestamp + 1 < current_time)
         {
@@ -1005,14 +898,18 @@ struct HoltWithTimeFillGaps
         return value + trend;
     }
 
-    double get(unsigned long long int current_time, [[maybe_unused]] double alpha, [[maybe_unused]] double beta) const
+    double get(uint64_t current_time, [[maybe_unused]] double alpha, [[maybe_unused]] double beta) const
     {
+        if (current_time < timestamp)
+        {
+            throw std::logic_error("Can't get for value less than timestamp");
+        }
         return value + trend * (current_time - timestamp);
     }
 
     bool less(const HoltWithTimeFillGaps & other, [[maybe_unused]] double alpha, [[maybe_unused]] double beta) const
     {
-        unsigned long long int max_time = std::max(timestamp, other.timestamp);
+        uint64_t max_time = std::max(timestamp, other.timestamp);
         return get(max_time, alpha, beta) < other.get(max_time, alpha, beta);
     }
 };
