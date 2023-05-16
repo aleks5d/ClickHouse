@@ -1582,6 +1582,10 @@ struct HoltWintersWithTimeFillGaps : DataHelper
 
     HoltWintersWithTimeFillGaps<type> predict_until(uint64_t current_time, double alpha, double beta, double gamma, uint32_t seasons_count) const
     {
+        if (current_time <= timestamp)
+        {
+            throw std::logic_error("Can't predict_until for value less or equal timestamp");
+        }
         auto copy_of_me = *this;
         while (copy_of_me.timestamp + 1 < current_time)
         {

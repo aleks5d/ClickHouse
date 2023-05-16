@@ -3086,14 +3086,14 @@ void registerWindowFunctions(AggregateFunctionFactory & factory)
                 name, argument_types, parameters);
         }, properties});
 
-    factory.registerFunction("HoltWintersMultipy", {[](const std::string & name,
+    factory.registerFunction("HoltWintersMultiply", {[](const std::string & name,
             const DataTypes & argument_types, const Array & parameters, const Settings *)
         {
             return std::make_shared<WindowFunctionHoltWinters<HoltWinters<HoltWintersType::Multiply>, TSAversion::WithoutTimeColumn>>(
                 name, argument_types, parameters);
         }, properties});
 
-    factory.registerFunction("HoltWintersMultipyWithTime", {[](const std::string & name,
+    factory.registerFunction("HoltWintersMultiplyWithTime", {[](const std::string & name,
             const DataTypes & argument_types, const Array & parameters, const Settings *)
         {
             return std::make_shared<WindowFunctionHoltWinters<HoltWintersWithTime<HoltWintersType::Multiply>, TSAversion::WithTimeColumn>>(
