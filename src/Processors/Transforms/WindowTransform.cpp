@@ -12,6 +12,7 @@
 #include <Columns/ColumnConst.h>
 #include <Columns/ColumnAggregateFunction.h>
 #include <DataTypes/DataTypesNumber.h>
+#include <DataTypes/DataTypeTuple.h>
 #include <DataTypes/getLeastSupertype.h>
 #include <DataTypes/DataTypeLowCardinality.h>
 #include <DataTypes/DataTypeInterval.h>
@@ -1541,6 +1542,56 @@ namespace recurrent_detail
 
         assert_cast<ColumnFloat64 &>(to).getData().push_back(value);
     }
+
+    template<typename T, typename... Args> std::string getTypesNames()
+    {
+        if constexpr (sizeof...(Args) == 0)
+        {
+            return std::string(typeid(T).name());
+        }
+        else
+        {
+            return std::string(typeid(T).name()) + ", " + getTypesNames<Args...>();
+        }
+    }
+    
+    template<typename T> bool setTupleToOutputColumnWithIndex(const WindowTransform * /* transform */, size_t /* function_index */, size_t /* index */, const T & /* value */)
+    {
+        return false;
+    }
+
+    template<> bool setTupleToOutputColumnWithIndex<Float64>(const WindowTransform * transform, size_t function_index, size_t index, const Float64 & value)
+    {
+        auto current_row = transform->current_row;
+        const auto & current_block = transform->blockAt(current_row);
+        IColumn & to = *current_block.output_columns[function_index];
+        ColumnTuple & to_tuple = assert_cast<ColumnTuple &>(to);
+
+        assert_cast<ColumnFloat64 &>(to_tuple.getColumn(index)).getData().push_back(value);
+        return true;
+    }
+
+    template<size_t index, typename T, typename... Args> bool setTupleToOutputColumn(const WindowTransform * transform, size_t function_index, const T & value, Args... args)
+    {
+        if constexpr (sizeof...(Args) == 0)
+        {
+            return setTupleToOutputColumnWithIndex<T>(transform, function_index, index, value);
+        }
+        else
+        {
+            return setTupleToOutputColumnWithIndex<T>(transform, function_index, index, value)
+                && setTupleToOutputColumn<index + 1, Args...>(transform, function_index, args...);
+        }
+    }
+
+    template<typename T, typename... Args> void setTupleToOutputColumn(const WindowTransform * transform, size_t function_index, const T & value, Args... args)
+    {
+        if (!setTupleToOutputColumn<0, T, Args...>(transform, function_index, value, args...))
+        {
+            throw Exception(ErrorCodes::NOT_IMPLEMENTED,
+                            "recurrent_detail::setTupleToOutputColumn() is not implemented for ({}) type", getTypesNames<T, Args...>());
+        }
+    }
 }
 
 struct WindowFunctionHelpers
@@ -1555,6 +1606,12 @@ struct WindowFunctionHelpers
     static void setValueToOutputColumn(const WindowTransform * transform, size_t function_index, T value)
     {
         recurrent_detail::setValueToOutputColumn<T>(transform, function_index, value);
+    }
+
+    template<typename... Args>
+    static void setTupleToOutputColumn(const WindowTransform * transform, size_t function_index, Args... value)
+    {
+        recurrent_detail::setTupleToOutputColumn<Args...>(transform, function_index, value...);
     }
 };
 
@@ -2080,6 +2137,148 @@ struct WindowFunctionExponentialSmoothingAlpha : public StatefulWindowFunction<S
     
     private:
         Float64 alpha;
+};
+
+template<typename State, TSAversion version>
+struct WindowFunctionHolt : public StatefulWindowFunction<State>
+{
+    static constexpr size_t ARGUMENT_VALUE = 0;
+    static constexpr size_t ARGUMENT_TIME = 1;
+
+    WindowFunctionHolt(const std::string & name_,
+            const DataTypes & argument_types_, const Array & parameters_)
+        : StatefulWindowFunction<State>(name_, argument_types_, parameters_, createResultType())
+    {
+        if (parameters_.size() != 2)
+        {
+            throw Exception(ErrorCodes::BAD_ARGUMENTS,
+                "Function {} takes exactly two parameters: alpha, beta", this->getName());
+        }
+        alpha = applyVisitor(FieldVisitorConvertToNumber<Float64>(), parameters_[0]);
+        beta = applyVisitor(FieldVisitorConvertToNumber<Float64>(), parameters_[1]);
+
+        if (alpha < 0)
+        {
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Aggregate function {} requires non negative alpha, got {}", 
+                this->getName(), alpha);
+        }
+        if (alpha > 1)
+        {
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Aggregate function {} requires alpha not greater one, got {}",
+                this->getName(), alpha);
+        }
+        if (beta < 0)
+        {
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Aggregate function {} requires non negative beta, got {}", 
+                this->getName(), beta);
+        }
+        if (beta > 1)
+        {
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Aggregate function {} requires beta not greater one, got {}",
+                this->getName(), beta);
+        }
+
+        if constexpr (version == TSAversion::WithTimeColumn)
+        {
+            if (argument_types_.size() != 2)
+            {
+                throw Exception(ErrorCodes::BAD_ARGUMENTS,
+                    "Function {} takes exactly two arguments", this->getName());
+            }
+        }
+        else
+        {
+            if (argument_types_.size() != 1)
+            {
+                throw Exception(ErrorCodes::BAD_ARGUMENTS,
+                    "Function {} takes exactly one argument", this->getName());
+            }
+        }
+
+        if (!isNumber(argument_types_[ARGUMENT_VALUE]))
+        {
+            throw Exception(ErrorCodes::BAD_ARGUMENTS,
+                "Argument {} must be a number, '{}' given",
+                ARGUMENT_VALUE,
+                argument_types_[ARGUMENT_VALUE]->getName());
+        }
+        
+        if constexpr (version == TSAversion::WithTimeColumn)
+        {
+            if (!isNativeUnsignedInteger(argument_types_[ARGUMENT_TIME]))
+            {
+                throw Exception(ErrorCodes::BAD_ARGUMENTS,
+                    "Argument {} must be a unsigned integer, '{}' given",
+                    ARGUMENT_TIME,
+                    argument_types_[ARGUMENT_TIME]->getName());
+            }
+        }
+    }
+    
+    static DataTypePtr createResultType()
+    {
+        DataTypes types
+        {
+            std::make_shared<DataTypeNumber<Float64>>(),
+            std::make_shared<DataTypeNumber<Float64>>()
+        };
+        return std::make_shared<DataTypeTuple>(std::move(types));
+    } 
+
+    bool allocatesMemoryInArena() const override { return false; }
+
+    void windowInsertResultInto(const WindowTransform * transform,
+        size_t function_index) override
+    {
+        const auto & workspace = transform->workspaces[function_index];
+        auto & state = this->getState(workspace);
+
+        auto start = transform->frame_start;
+
+        // we can continue previous state.
+        // only if same start, because we can't remove/add to begin.
+        // only with greater end, because we can't remove from end.
+        if (transform->prev_frame_start == transform->frame_start
+            && transform->prev_frame_end <= transform->frame_end)
+        {
+            start = transform->prev_frame_end;
+        }
+        else // otherwise - clear state and start from begin
+        {
+            state = State();
+        }
+
+        for (RowNumber i = start; i < transform->frame_end; transform->advanceRowNumber(i))
+        {
+            Float64 new_value = WindowFunctionHelpers::getValue<Float64>(transform, function_index, ARGUMENT_VALUE, i);
+            try
+            {
+                if constexpr (version == TSAversion::WithTimeColumn)
+                {
+                    UInt64 new_time = WindowFunctionHelpers::getValue<UInt64>(transform, function_index, ARGUMENT_TIME, i);
+                    state.add(new_value, new_time, alpha, beta);
+                }
+                else
+                {
+                    state.add(new_value, alpha, beta);
+                }
+            }
+            catch (const std::logic_error & e)
+            {
+                throw Exception(ErrorCodes::INCORRECT_DATA,
+                    "Incorrect data given to aggregate function {}, {}",
+                    this->getName(),
+                    e.what()
+                );
+            }
+        }
+
+        WindowFunctionHelpers::setTupleToOutputColumn<Float64, Float64>(transform, function_index, state.get(alpha, beta), state.get_trend(alpha, beta));
+    }
+    
+    private:
+        Float64 alpha;
+        Float64 beta;
 };
 
 struct WindowFunctionRowNumber final : public WindowFunction
@@ -2684,6 +2883,27 @@ void registerWindowFunctions(AggregateFunctionFactory & factory)
             const DataTypes & argument_types, const Array & parameters, const Settings *)
         {
             return std::make_shared<WindowFunctionExponentialSmoothingAlpha<ExponentiallySmoothedAlphaWithTimeFillGaps, TSAversion::WithTimeColumn>>(
+                name, argument_types, parameters);
+        }, properties});
+    
+    factory.registerFunction("Holt", {[](const std::string & name,
+            const DataTypes & argument_types, const Array & parameters, const Settings *)
+        {
+            return std::make_shared<WindowFunctionHolt<Holt, TSAversion::WithoutTimeColumn>>(
+                name, argument_types, parameters);
+        }, properties});
+
+    factory.registerFunction("HoltWithTime", {[](const std::string & name,
+            const DataTypes & argument_types, const Array & parameters, const Settings *)
+        {
+            return std::make_shared<WindowFunctionHolt<HoltWithTime, TSAversion::WithTimeColumn>>(
+                name, argument_types, parameters);
+        }, properties});
+    
+    factory.registerFunction("HoltWithTimeFillGaps", {[](const std::string & name,
+            const DataTypes & argument_types, const Array & parameters, const Settings *)
+        {
+            return std::make_shared<WindowFunctionHolt<HoltWithTimeFillGaps, TSAversion::WithTimeColumn>>(
                 name, argument_types, parameters);
         }, properties});
 
