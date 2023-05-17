@@ -464,6 +464,13 @@ inline bool isNativeInteger(const T & data_type)
     return which.isNativeInt() || which.isNativeUInt();
 }
 
+template <typename T>
+inline bool isNativeUnsignedInteger(const T & data_type)
+{
+    WhichDataType which(data_type);
+    return which.isNativeUInt(); 
+}
+
 
 template <typename T>
 inline bool isNativeNumber(const T & data_type)

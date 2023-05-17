@@ -50,4 +50,20 @@ inline void assertArityAtMost(const std::string & name, const DataTypes & argume
                     name, maximal_arity);
 }
 
+template<std::size_t minimal_arity>
+inline void assertArityAtLeast(const std::string & name, const DataTypes & argument_types)
+{
+    static_assert(minimal_arity > 0, "no point to use assertArityAtLeast with minimal_arity = 0");
+
+    if (argument_types.size() >= minimal_arity)
+        return;
+    
+    if constexpr (minimal_arity == 1)
+        throw Exception(ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH, "Aggregate function {} requires at least one argument",
+                        name);
+
+    throw Exception(ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH, "Aggregate function {} requires at least {} arguments",
+                    name, minimal_arity); 
+}
+
 }

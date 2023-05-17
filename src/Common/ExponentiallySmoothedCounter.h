@@ -2,7 +2,8 @@
 
 #include <cmath>
 #include <limits>
-
+#include <stdexcept>
+#include <optional>
 
 namespace DB
 {
@@ -106,6 +107,460 @@ struct ExponentiallySmoothedAverage
     bool less(const ExponentiallySmoothedAverage & other, double half_decay_time) const
     {
         return remap(other.time, half_decay_time).value < other.value;
+    }
+};
+
+/// Helper struct contains functions for all Counters 
+struct DataHelper
+{
+    /// equivalent of pow(value, count).
+    /// using binary power for better precision
+    static inline double scale(double value, uint64_t count)
+    {
+        double result = 1;
+        while (count)
+        {
+            if (count & 1)
+            {
+                result *= value;
+            }
+            count >>= 1;
+            value *= value;
+        }
+        return result;
+    }
+
+    /// equivalent of pow(1 - value, count).
+    /// using binary power for better precision
+    static inline double scale_one_minus_value(double value, uint64_t count)
+    {
+        return scale(1 - value, count);
+    }
+
+    /// optional value to store value with timestamp
+    using optional_timestamped_value = std::optional<std::pair<double, uint64_t>>;
+
+    /// create optional_timestamped_value with given value and timestamp
+    static optional_timestamped_value make_optional_timestamped_value(double value, uint64_t timestamp)
+    {
+        return optional_timestamped_value(std::make_pair(value, timestamp));
+    }
+
+    /// create empty optional_timestamped_value
+    static optional_timestamped_value make_optional_timestamped_value()
+    {
+        return optional_timestamped_value();
+    }
+
+    /// get value from optional_timestamped_value or 0 if not exists
+    static double get_value(const optional_timestamped_value & o)
+    {
+        return o.has_value() ? o->first : 0;
+    }
+
+    /// get timestamp from optional_timestamped_value or 0 if not exists
+    static uint64_t get_timestamp(const optional_timestamped_value & o)
+    {
+        return o.has_value() ? o->second : 0;
+    }
+
+    /// get minimum by timestamps if not equal
+    /// otherwise get sum of values with timestamp
+    static optional_timestamped_value min_or_merge(const optional_timestamped_value & a, const optional_timestamped_value & b)
+    {
+        if (!a.has_value() || !b.has_value())
+        {
+            return a.has_value() ? a : b;
+        }
+        if (get_timestamp(a) == get_timestamp(b))
+        {
+            return make_optional_timestamped_value(get_value(a) + get_value(b), get_timestamp(a));
+        }
+        return get_timestamp(a) < get_timestamp(b) ? a : b;
+    }
+
+    /// get maximum by timestamps if not equal
+    /// otherwise get empty optional_timestamped_value
+    static optional_timestamped_value max_or_empty(const optional_timestamped_value & a, const optional_timestamped_value & b)
+    {
+        if (!a.has_value() || !b.has_value())
+        {
+            return make_optional_timestamped_value();
+        }
+        if (get_timestamp(a) == get_timestamp(b))
+        {
+            return make_optional_timestamped_value();
+        }
+        return get_timestamp(a) > get_timestamp(b) ? a : b;
+    }
+};
+
+/** https://en.wikipedia.org/wiki/Exponential_smoothing#Basic_(simple)_exponential_smoothing
+  *
+  * Exponentially smoothed value is weighted average with weight proportional to some function of the time passed.
+  * In this class it's no timestamps, so time is count values added after.
+  * For example, if alpha = 1/3 and it's values x0, x1, x2 added, result will be x0 * 4/9 + x1 * 2/9 + x2 * 3/9.
+  */
+struct ExponentiallySmoothedAlpha : DataHelper
+{
+    /// The sum. It contains added values scaled accordingly count of added after value.
+
+    double value = 0;
+
+    /// count of added values. Using to calculate exponential smoothing.
+
+    uint64_t count = 0;
+
+    ExponentiallySmoothedAlpha() = default;
+
+    ExponentiallySmoothedAlpha(double current_value)
+        : value(current_value), count(1)
+    {
+    }
+
+    ExponentiallySmoothedAlpha(double current_value, uint64_t current_count)
+        : value(current_value), count(current_count)
+    {
+    }
+
+    /// Obtain the same counter with bigger count.
+    /// Works only for given count >= count.
+    ExponentiallySmoothedAlpha remap(uint64_t current_count, double alpha) const
+    {
+        if (current_count < count) 
+        {
+            throw std::logic_error("can't remap for value less than count");
+        }
+        else
+        {
+            return ExponentiallySmoothedAlpha(
+                value * scale_one_minus_value(alpha, current_count - count),
+                current_count
+            );
+        }
+    }
+
+    /// Merge two counters. Add b counter to begin of a counter.
+    /// Works only for b counter contains no more than 1 value.
+    static ExponentiallySmoothedAlpha merge(const ExponentiallySmoothedAlpha & a, const ExponentiallySmoothedAlpha & b, double alpha)
+    {
+        if (!a.count || !b.count)
+        {
+            return a.count ? a : b;
+        }
+        if (b.count == 1)
+        {
+            return ExponentiallySmoothedAlpha(
+                alpha * b.value + (1 - alpha) * a.value,
+                b.count + a.count
+            );
+        }
+        throw std::logic_error("Can't merge with counter with count > 1");
+    }
+
+    /// Merge this counter with other one.
+    void merge(const ExponentiallySmoothedAlpha & other, double alpha)
+    {
+        *this = merge(*this, other, alpha);
+    }
+
+    /// Add new one value.
+    void add(double new_value, double alpha)
+    {
+        merge(ExponentiallySmoothedAlpha(new_value), alpha);
+    }
+
+    /// Get current value.
+    double get([[maybe_unused]] double alpha) const
+    {
+        return value;
+    }
+
+    /// Get value at the given count.
+    /// Works only with given count >= count.
+    double get(uint64_t current_count, [[maybe_unused]] double alpha) const
+    {
+        if (current_count < count)
+        {
+            throw std::logic_error("can't get with count less than counter count");
+        }
+        return remap(current_count, alpha).get(alpha);
+    }
+
+    /// Compare two counters (by moving to the same count and comparing values).
+    /// You can store the counters in container and sort it without changing the stored values over time.
+    bool less(const ExponentiallySmoothedAlpha & other, double alpha) const
+    {
+        uint64_t max_count = std::max(count, other.count);
+        return get(max_count, alpha) < other.get(max_count, alpha);
+    }
+};
+
+/** https://en.wikipedia.org/wiki/Exponential_smoothing#Basic_(simple)_exponential_smoothing
+  *
+  * Exponentially smoothed value is weighted average with weight proportional to some function of the time passed.
+  * In this class timestamps exist, so time is biggest timestamp minus value timestamp.
+  * Skipped values fill by 0.
+  * For example, if alpha = 1/3 and it's values timestamps (x0, 0), (x1, 2), (x2, 4) added, result will be x0 * 16/81 + x1 * 12/81 + x2 * 27/81.
+  */
+struct ExponentiallySmoothedAlphaWithTime : DataHelper
+{
+    /// The sum. It contains added values scaled accordingly time elapsed after them.
+
+    double value = 0;
+
+    /// Current timestamp. Using in calculating exponential smoothing.
+
+    uint64_t timestamp = 0;
+
+    /// First value added to this counter.
+    /// Using for avoid multiplying first added value by alpha. 
+
+    optional_timestamped_value first_value = make_optional_timestamped_value();
+
+    ExponentiallySmoothedAlphaWithTime() = default;
+
+    ExponentiallySmoothedAlphaWithTime(double current_value, uint64_t current_time)
+        : value(current_value), timestamp(current_time), first_value(make_optional_timestamped_value(current_value, current_time))
+    {
+    }
+
+    ExponentiallySmoothedAlphaWithTime(double current_value, uint64_t current_time, optional_timestamped_value current_first_value)
+        : value(current_value), timestamp(current_time), first_value(current_first_value)
+    {
+    }
+
+    /// Obtain the same counter in another point of time.
+    /// Works only for current_time >= timestamp.
+    ExponentiallySmoothedAlphaWithTime remap(uint64_t current_time, double alpha) const
+    {
+        if (current_time < timestamp)
+        {
+            throw std::logic_error("can't remap for value less than timestamp");
+        }
+        else
+        {
+            return ExponentiallySmoothedAlphaWithTime(
+                value * scale_one_minus_value(alpha, current_time - timestamp),
+                current_time,
+                first_value
+            );
+        }
+    }
+
+    /// Merge two counters. This class ignore gaps, so it can merge two arbitrary counters. 
+    static ExponentiallySmoothedAlphaWithTime merge(const ExponentiallySmoothedAlphaWithTime & a, const ExponentiallySmoothedAlphaWithTime & b, double alpha)
+    {
+        if (!a.first_value.has_value() || !b.first_value.has_value())
+        {
+            return a.first_value.has_value() ? a : b;
+        }
+        uint64_t max_time = std::max(a.timestamp, b.timestamp);
+        auto remapped_a = a.remap(max_time, alpha);
+        auto remapped_b = b.remap(max_time, alpha);
+        optional_timestamped_value min_first_value = min_or_merge(remapped_a.first_value, remapped_b.first_value);
+        optional_timestamped_value max_first_value = max_or_empty(remapped_a.first_value, remapped_b.first_value);
+        return ExponentiallySmoothedAlphaWithTime(
+            remapped_a.value + remapped_b.value 
+                - get_value(max_first_value) * scale_one_minus_value(alpha, max_time - get_timestamp(max_first_value)) * (1 - alpha),
+            max_time,
+            min_first_value
+        );
+    }
+
+    /// Merge this counter with other one.
+    void merge(const ExponentiallySmoothedAlphaWithTime & other, double alpha)
+    {
+        *this = merge(*this, other, alpha);
+    }
+
+    /// Add new value.
+    void add(double new_value, uint64_t new_time, double alpha)
+    {
+        merge(ExponentiallySmoothedAlphaWithTime(new_value, new_time), alpha);
+    }
+
+    /// Get current value.
+    double get([[maybe_unused]] double alpha) const
+    {
+        return value;
+    }
+
+    /// Get value at the given moment.
+    /// Works only with given time >= timestamp.
+    double get(uint64_t current_time, [[maybe_unused]] double alpha) const
+    {
+        if (current_time < timestamp)
+        {
+            throw std::logic_error("can't get with time less than counter timestamp");
+        }
+        return remap(current_time, alpha).get(alpha);
+    }
+
+    /// Compare two counters (by moving to the same time and comparing value).
+    /// You can store the counters in container and sort it without changing the stored values over time.
+    bool less(const ExponentiallySmoothedAlphaWithTime & other, double alpha) const
+    {
+        uint64_t max_time = std::max(timestamp, other.timestamp);
+        return get(max_time, alpha) < other.get(max_time, alpha);
+    }
+};
+
+
+/** https://en.wikipedia.org/wiki/Exponential_smoothing#Basic_(simple)_exponential_smoothing
+  *
+  * Exponentially smoothed value is weighted average with weight proportional to some function of the time passed.
+  * In this class timestamps exist, so time is biggest timestamp minus value timestamp.
+  * Skipped values fill by current value of counter.
+  * For example, if alpha = 1/3 and it's values timestamps (x0, 0), (x1, 2), (x2, 4) added, result will be x0 * 36/81 + x1 * 18/81 + x2 * 27/81.
+  */
+struct ExponentiallySmoothedAlphaWithTimeFillGaps : DataHelper
+{
+    /// The sum. It contains added values scaled accordingly time elapsed after them.
+
+    double value = 0;
+
+    /// Current timestamp. Using in calculating exponential smoothing.
+
+    uint64_t timestamp = 0;
+
+    /// count of added values. Using in calculating exponential smoothing. And check count of adding values.
+
+    uint64_t count = 0;
+
+    ExponentiallySmoothedAlphaWithTimeFillGaps() = default;
+
+    ExponentiallySmoothedAlphaWithTimeFillGaps(double current_value, uint64_t current_time)
+        : value(current_value), timestamp(current_time), count(1)
+    {
+    }
+    
+    ExponentiallySmoothedAlphaWithTimeFillGaps(double current_value, uint64_t current_time, uint64_t current_count)
+        : value(current_value), timestamp(current_time), count(current_count)
+    {
+    }
+
+    /// Obtain the same counter in another point of time.
+    /// Works only for current_time >= timestamp.
+    /// WARNING: Don't fill by calculated values.
+    ExponentiallySmoothedAlphaWithTimeFillGaps remap(uint64_t current_time, double alpha) const
+    {
+        if (current_time < timestamp)
+        {
+            throw std::logic_error("can't remap for value less than timestamp");
+        }
+        else
+        {
+            return ExponentiallySmoothedAlphaWithTimeFillGaps(
+                value * scale_one_minus_value(alpha, current_time - timestamp),
+                current_time,
+                count
+            );
+        }
+    }
+
+    /// Merge two counters.
+    /// This class don't ignore gaps, so it can merge two counters if one of next conditions:
+    ///  - one of given counters is empty
+    ///  - b counter contains one value with timestamp greater than timestamp of a. 
+    static ExponentiallySmoothedAlphaWithTimeFillGaps merge(const ExponentiallySmoothedAlphaWithTimeFillGaps & a, const ExponentiallySmoothedAlphaWithTimeFillGaps & b,
+                                                            double alpha)
+    {
+        if (a.count == 0 || b.count == 0)
+        {
+            return a.count == 0 ? b : a;
+        }
+        if (b.count == 1)
+        {
+            auto predicted_a = a.predict_until(b.timestamp, alpha);
+            return ExponentiallySmoothedAlphaWithTimeFillGaps(
+                alpha * b.value + (1 - alpha) * predicted_a.value,
+                b.timestamp,
+                predicted_a.count + b.count
+            );
+        }
+        throw std::logic_error("Can't merge with counter with count > 1");
+    }
+
+    /// Merge this counter with other one.
+    void merge(const ExponentiallySmoothedAlphaWithTimeFillGaps & other, double alpha)
+    {
+        *this = merge(*this, other, alpha);
+    }
+
+    /// Add new value.
+    /// Works only if counter is empty or new time > timestamp. 
+    void add(double new_value, uint64_t new_time, double alpha)
+    {
+        if (count > 0 && new_time <= timestamp)
+        {
+            throw std::logic_error("can't add new_value with new_timestamp less or euqual than timestamp");
+        }
+        merge(ExponentiallySmoothedAlphaWithTimeFillGaps(new_value, new_time), alpha);
+    }
+
+    /// Add predicted value.
+    /// Works only if counter is not empty and timestamp can be increased.
+    void add_predict(double alpha)
+    {
+        if (count == 0)
+        {
+            throw std::logic_error("can't add_predict in empty counter");
+        }
+        uint64_t new_time = timestamp + 1;
+        if (new_time < timestamp) // check timestamp overflowed
+        {
+            throw std::logic_error("can't add_predict in counter because of timestamp overflow");
+        }
+        add(get(alpha), new_time, alpha);
+    }
+
+    /// Add predicted value until new timestamp will less current_time.
+    /// Main idea of usage: prepare counter to add value with current_time.
+    /// Works only with current_time > timestamp
+    ExponentiallySmoothedAlphaWithTimeFillGaps predict_until(uint64_t current_time, double alpha) const
+    {
+        if (current_time <= timestamp)
+        {
+            throw std::logic_error("can't predict_until for value less or equal than timestamp");
+        }
+        auto copy_of_this = *this;
+        while (copy_of_this.timestamp + 1 < current_time)
+        {
+            copy_of_this.add_predict(alpha);
+        }
+        return copy_of_this;
+    }
+
+    /// Get current value.
+    double get([[maybe_unused]] double alpha) const
+    {
+        return value;
+    }
+
+    /// Get value at the given moment.
+    /// Works only with given time >= timestamp.
+    double get(uint64_t current_time, double alpha) const
+    {
+        if (current_time < timestamp)
+        {
+            throw std::logic_error("can't get with time less than counter timestamp");
+        }
+        if (current_time == timestamp)
+        {
+            return get(alpha);
+        }
+        auto predicted = predict_until(current_time, alpha);
+        predicted.add_predict(alpha);
+        return predicted.get(alpha);
+    }
+
+    /// Compare two counters (by moving to the same time and comparing value).
+    /// You can store the counters in container and sort it without changing the stored values over time.
+    bool less(const ExponentiallySmoothedAlphaWithTimeFillGaps & other, double alpha) const
+    {
+        uint64_t max_time = std::max(timestamp, other.timestamp);
+        return get(max_time, alpha) < other.get(max_time, alpha);
     }
 };
 
