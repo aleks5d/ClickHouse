@@ -207,7 +207,7 @@ struct ExponentiallySmoothedAlpha : DataHelper
 
     double value = 0;
 
-    /// count of added values. Using to calculate exponential smoothing.
+    /// Count of added values. Using to calculate exponential smoothing.
 
     uint64_t count = 0;
 
@@ -244,9 +244,9 @@ struct ExponentiallySmoothedAlpha : DataHelper
     /// Works only for b counter contains no more than 1 value.
     static ExponentiallySmoothedAlpha merge(const ExponentiallySmoothedAlpha & a, const ExponentiallySmoothedAlpha & b, double alpha)
     {
-        if (!a.count || !b.count)
+        if (a.count == 0 || b.count == 0)
         {
-            return a.count ? a : b;
+            return a.count == 0 ? b : a;
         }
         if (b.count == 1)
         {
@@ -424,7 +424,7 @@ struct ExponentiallySmoothedAlphaWithTimeFillGaps : DataHelper
 
     uint64_t timestamp = 0;
 
-    /// count of added values. Using in calculating exponential smoothing. And check count of adding values.
+    /// Count of added values. Using in calculating exponential smoothing. And check count of adding values.
 
     uint64_t count = 0;
 
@@ -494,7 +494,7 @@ struct ExponentiallySmoothedAlphaWithTimeFillGaps : DataHelper
     {
         if (count > 0 && new_time <= timestamp)
         {
-            throw std::logic_error("can't add new_value with new_timestamp less or euqual than timestamp");
+            throw std::logic_error("can't add new_value with new_time less or euqual than counter timestamp");
         }
         merge(ExponentiallySmoothedAlphaWithTimeFillGaps(new_value, new_time), alpha);
     }
@@ -564,11 +564,23 @@ struct ExponentiallySmoothedAlphaWithTimeFillGaps : DataHelper
     }
 };
 
+/** https://en.wikipedia.org/wiki/Exponential_smoothing#Double_exponential_smoothing_(Holt_linear)
+  *
+  * Holt algorithm value is predict of next one value based on given values.
+  * It's using trend of data and exponentially smoothed averaged on it.
+  * In this class it's no timestamps, so time is count values added after.
+  */
 struct Holt : DataHelper
 {
+    /// The sum. It contains added values scaled accordingly count of added after value and trend.
+
     double value = 0;
 
+    /// The trend. It contains calculated trends scaled accordingly count of added after trend.
+
     double trend = 0;
+    
+    /// Count of added values. Using to calculate algorithm transition.
 
     uint64_t count = 0;
 
@@ -584,6 +596,8 @@ struct Holt : DataHelper
     {
     }
 
+    /// Obtain the same counter with bigger count.
+    /// Works only for given count >= count.
     Holt remap(uint64_t current_count, double alpha, double beta) const
     {
         if (current_count < count)
@@ -597,11 +611,13 @@ struct Holt : DataHelper
         );
     }
 
+    /// Merge two counters. Add b counter to begin of a counter.
+    /// Works only for b counter contains no more than 1 value.
     static Holt merge(const Holt & a, const Holt & b, double alpha, double beta)
     {
-        if (!a.count || !b.count)
+        if (a.count == 0 || b.count == 0)
         {
-            return a.count ? a : b;
+            return a.count == 0 ? b : a;
         }
         if (b.count == 1)
         {
@@ -626,16 +642,21 @@ struct Holt : DataHelper
         throw std::logic_error("Can't merge with counter with count > 1");
     }
 
+    /// Merge this counter with other one.
     void merge(const Holt & other, double alpha, double beta)
     {
         *this = merge(*this, other, alpha, beta);
     }
 
+    /// Add new one value.
     void add(double new_value, double alpha, double beta)
     {
         merge(Holt(new_value), alpha, beta);
     }
 
+
+    /// Get predict of value at the given count.
+    /// Works only with given count >= count.
     double get(uint64_t current_count, [[maybe_unused]] double alpha, [[maybe_unused]] double beta) const
     {
         if (current_count < count)
@@ -644,17 +665,21 @@ struct Holt : DataHelper
         }
         return value + trend * (current_count - count);
     }
-    
+
+    /// Get current predict of value.
     double get([[maybe_unused]] double alpha, [[maybe_unused]] double beta) const
     {
         return value + trend;
     }
 
+    /// Get current trend.
     double get_trend([[maybe_unused]] double alpha, [[maybe_unused]] double beta) const
     {
         return trend;
     }
 
+    /// Compare two counters (by moving to the same count and comparing predictions).
+    /// You can store the counters in container and sort it without changing the stored values over time.
     bool less(const Holt & other, [[maybe_unused]] double alpha, [[maybe_unused]] double beta) const
     {
         uint64_t max_count = std::max(count, other.count);
@@ -662,30 +687,51 @@ struct Holt : DataHelper
     }
 };
 
+/** https://en.wikipedia.org/wiki/Exponential_smoothing#Double_exponential_smoothing_(Holt_linear)
+  *
+  * Holt algorithm value is predict of next one value based on given values.
+  * It's using trend of data and exponentially smoothed averaged on it.
+  * In this class timestamps exist, so time is biggest timestamp minus value timestamp.
+  * Skipped values ignored
+  */
 struct HoltWithTime : DataHelper
 {
+    /// The sum. It contains added values scaled accordingly time elapsed after them.
+
     double value = 0;
+
+    /// The trend. It contains calculated trends scaled accordingly count of added after trend.
 
     double trend = 0;
 
+    /// Current timestamp. Using in calculating alpgorithm transition.
+
     uint64_t timestamp = 0;
 
-    ovt first_value;
+    /// First value added to this counter.
+    /// Using for avoid multiplying first added value by alpha. 
 
-    ovt first_trend;
+    optional_timestamped_value first_value;
+
+    /// First trend happened in this counter.
+    /// Using for avoid multiplying first happened trend by beta. 
+
+    optional_timestamped_value first_trend;
 
     HoltWithTime() = default;
 
-    HoltWithTime(double current_value, double current_trend, uint64_t current_timestamp, ovt first_value_, ovt first_trend_)
-        : value(current_value), trend(current_trend), timestamp(current_timestamp), first_value(first_value_), first_trend(first_trend_)
+    HoltWithTime(double current_value, double current_trend, uint64_t current_timestamp, optional_timestamped_value current_first_value, optional_timestamped_value current_first_trend)
+        : value(current_value), trend(current_trend), timestamp(current_timestamp), first_value(current_first_value), first_trend(current_first_trend)
     {
     }
 
     HoltWithTime(double current_value, uint64_t current_timestamp)
-        : value(current_value), trend(0), timestamp(current_timestamp), first_value(current_value, current_timestamp)
+        : value(current_value), timestamp(current_timestamp), first_value(make_optional_timestamped_value(current_value, current_timestamp))
     {
     }
 
+    /// Obtain the same counter in another point of time.
+    /// Works only for current_time >= timestamp.
     HoltWithTime remap(uint64_t current_time, double alpha, double beta) const
     {
         if (current_time < timestamp)
@@ -701,15 +747,18 @@ struct HoltWithTime : DataHelper
         );
     }
 
+    /// Merge two counters. Two trends can't be merged, so it can merge two counters if one of next:
+    ///  - one of given counters is empty
+    ///  - b has no trend (equivalent of b is empty or all timestamps in b are equal)
     static HoltWithTime merge(const HoltWithTime & a, const HoltWithTime & b, double alpha, double beta)
     {
-        if (!a.first_value.was || !b.first_value.was)
+        if (!a.first_value.has_value() || !b.first_value.has_value())
         {
-            return a.first_value.was ? a : b;
+            return a.first_value.has_value() ? a : b;
         }
-        if (!b.first_trend.was)
+        if (!b.first_trend.has_value())
         {
-            if (!a.first_trend.was)
+            if (!a.first_trend.has_value())
             {
                 if (a.timestamp == b.timestamp)
                 {
@@ -723,16 +772,16 @@ struct HoltWithTime : DataHelper
                     uint64_t max_time = std::max(a.timestamp, b.timestamp);
                     auto remapped_a = a.remap(max_time, alpha, beta);
                     auto remapped_b = b.remap(max_time, alpha, beta);
-                    ovt max_value = ovt::max_or_empty(a.first_value, b.first_value);
-                    ovt min_value = ovt::min_or_merge(a.first_value, b.first_value);
-                    double trend = (max_value.value - min_value.value) / (max_value.timestamp - min_value.timestamp);
+                    optional_timestamped_value max_value = max_or_empty(a.first_value, b.first_value);
+                    optional_timestamped_value min_value = min_or_merge(a.first_value, b.first_value);
+                    double trend = (get_value(max_value) - get_value(min_value)) / (get_timestamp(max_value) - get_timestamp(min_value));
                     return HoltWithTime(
                         remapped_a.value + remapped_b.value
-                            - max_value.value * (1 - alpha),
+                            - get_value(max_value) * (1 - alpha),
                         trend,
                         max_time,
                         min_value,
-                        ovt(trend, max_time)
+                        make_optional_timestamped_value(trend, max_time)
                     );
                 }
             }
@@ -753,16 +802,16 @@ struct HoltWithTime : DataHelper
                     uint64_t max_time = std::max(a.timestamp, b.timestamp);
                     auto remapped_a = a.remap(max_time, alpha, beta);
                     auto remapped_b = b.remap(max_time, alpha, beta);
-                    ovt excess_value = ovt::max_or_empty(a.first_value, b.first_value);
-                    ovt excess_trend = ovt::max_or_empty(a.first_trend, b.first_trend);
+                    optional_timestamped_value excess_value = max_or_empty(a.first_value, b.first_value);
+                    optional_timestamped_value excess_trend = max_or_empty(a.first_trend, b.first_trend);
                     return HoltWithTime(
                         remapped_a.value + remapped_b.value
-                            - excess_value.value * scale_one_minus_value(alpha, max_time - excess_value.timestamp) * (1 - alpha),
+                            - get_value(excess_value) * scale_one_minus_value(alpha, max_time - get_timestamp(excess_value)) * (1 - alpha),
                         remapped_a.trend + remapped_b.trend
-                            - excess_trend.value * scale_one_minus_value(beta, max_time - excess_trend.timestamp) * (1 - beta),
+                            - get_value(excess_trend) * scale_one_minus_value(beta, max_time - get_timestamp(excess_trend)) * (1 - beta),
                         max_time,
-                        ovt::min_or_merge(a.first_value, b.first_value),
-                        ovt::min_or_merge(a.first_trend, b.first_trend)
+                        min_or_merge(a.first_value, b.first_value),
+                        min_or_merge(a.first_trend, b.first_trend)
                     );
                 }
             }
@@ -770,16 +819,20 @@ struct HoltWithTime : DataHelper
         throw std::logic_error("Can't merge with counter with count > 1");
     }
 
+    /// Merge this counter with other one.
     void merge(const HoltWithTime & other, double alpha, double beta)
     {
         *this = merge(*this, other, alpha, beta);
     }
 
+    /// Add new one value.
     void add(double new_value, uint64_t new_timestamp, double alpha, double beta)
     {
         merge(HoltWithTime(new_value, new_timestamp), alpha, beta);
     }
 
+    /// Get predict of value at the given count.
+    /// Works only with given count >= count.
     double get(uint64_t current_time, [[maybe_unused]] double alpha, [[maybe_unused]] double beta) const
     {
         if (current_time < timestamp)
@@ -789,16 +842,20 @@ struct HoltWithTime : DataHelper
         return value + trend * (current_time - timestamp);
     }
 
+    /// Get current predict of value.
     double get([[maybe_unused]] double alpha, [[maybe_unused]] double beta) const
     {
         return value + trend;
     }
 
+    /// Get current trend.
     double get_trend([[maybe_unused]] double alpha, [[maybe_unused]] double beta) const
     {
         return trend;
     }
 
+    /// Compare two counters (by moving to the same count and comparing predictions).
+    /// You can store the counters in container and sort it without changing the stored values over time.
     bool less(const HoltWithTime & other, [[maybe_unused]] double alpha, [[maybe_unused]] double beta) const
     {
         uint64_t max_time = std::max(timestamp, other.timestamp);
@@ -806,14 +863,29 @@ struct HoltWithTime : DataHelper
     }
 };
 
+/** https://en.wikipedia.org/wiki/Exponential_smoothing#Double_exponential_smoothing_(Holt_linear)
+  *
+  * Holt algorithm value is predict of next one value based on given values.
+  * It's using trend of data and exponentially smoothed averaged on it.
+  * In this class timestamps exist, so time is biggest timestamp minus value timestamp.
+  * Skipped values fill by prediction.
+  */
 struct HoltWithTimeFillGaps : DataHelper
 {
+    /// The sum. It contains added values scaled accordingly count of added after value and trend.
+
     double value = 0;
+
+    /// The trend. It contains calculated trends scaled accordingly count of added after trend.
 
     double trend = 0;
 
+    /// Current timestamp. Using to calculate algorith transition.
+
     uint64_t timestamp = 0;
     
+    /// Count of added values. Using to calculate algorithm transition.
+
     uint64_t count = 0;
 
     HoltWithTimeFillGaps() = default;
@@ -828,6 +900,8 @@ struct HoltWithTimeFillGaps : DataHelper
     {
     }
 
+    /// Obtain the same counter in another point of time.
+    /// Works only for current_time >= timestamp.
     HoltWithTimeFillGaps remap(uint64_t current_time, double alpha, double beta) const
     {
         if (current_time < timestamp)
@@ -841,12 +915,16 @@ struct HoltWithTimeFillGaps : DataHelper
             count
         );
     }
-
+    
+    /// Merge two counters.
+    /// This class don't ignore gaps, so it can merge two counters if one of next conditions:
+    ///  - one of given counters is empty
+    ///  - b counter contains one value with timestamp greater than timestamp of a.
     static HoltWithTimeFillGaps merge(const HoltWithTimeFillGaps & a, const HoltWithTimeFillGaps & b, double alpha, double beta)
     {
-        if (!a.count || !b.count)
+        if (a.count == 0 || b.count == 0)
         {
-            return a.count ? a : b;
+            return a.count == 0 ? b : a;
         }
         if (b.count == 1)
         {
@@ -874,21 +952,42 @@ struct HoltWithTimeFillGaps : DataHelper
         throw std::logic_error("Can't merge with counter with count > 1");
     }
 
+    /// Merge this counter with other one.
     void merge(const HoltWithTimeFillGaps & other, double alpha, double beta)
     {
         *this = merge(*this, other, alpha, beta);
     }
 
-    void add(double new_value, uint64_t new_timestamp, double alpha, double beta)
+    /// Add new value.
+    /// Works only if counter is empty or new time > timestamp. 
+    void add(double new_value, uint64_t new_time, double alpha, double beta)
     {
-        merge(HoltWithTimeFillGaps(new_value, new_timestamp), alpha, beta);
+        if (count > 0 && new_time <= timestamp)
+        {
+            throw std::logic_error("can't add new_value with new_time less or equal than counter timestamp");
+        }
+        merge(HoltWithTimeFillGaps(new_value, new_time), alpha, beta);
     }
 
+    /// Add predicted value.
+    /// Works only if counter is not empty and timestamp can be increased.
     void add_predict(double alpha, double beta)
     {
-        add(value + trend, timestamp + 1, alpha, beta);
+        if (count == 0)
+        {
+            throw std::logic_error("can't add_predict in empty counter");
+        }
+        uint64_t new_time = timestamp + 1;
+        if (new_time < timestamp) // check timestamp overflowed
+        {
+            throw std::logic_error("can't add_predict in counter because of timestamp overflow");
+        }
+        add(get(alpha, beta), new_time, alpha, beta);
     }
 
+    /// Add predicted value until new timestamp will less current_time.
+    /// Main idea of usage: prepare counter to add value with current_time.
+    /// Works only with current_time > timestamp
     HoltWithTimeFillGaps predict_until(uint64_t current_time, double alpha, double beta) const
     {
         if (current_time <= timestamp)
@@ -903,11 +1002,14 @@ struct HoltWithTimeFillGaps : DataHelper
         return copy_of_me;
     }
 
+    /// Get current predict of value.
     double get([[maybe_unused]] double alpha, [[maybe_unused]] double beta) const
     {
         return value + trend;
     }
 
+    /// Get predict of value at the given count.
+    /// Works only with current_time >= timestamp.
     double get(uint64_t current_time, [[maybe_unused]] double alpha, [[maybe_unused]] double beta) const
     {
         if (current_time < timestamp)
@@ -917,11 +1019,14 @@ struct HoltWithTimeFillGaps : DataHelper
         return value + trend * (current_time - timestamp);
     }
 
+    /// Get current trend.
     double get_trend([[maybe_unused]] double alpha, [[maybe_unused]] double beta) const
     {
         return trend;
     }
 
+    /// Compare two counters (by moving to the same count and comparing predictions).
+    /// You can store the counters in container and sort it without changing the stored values over time.
     bool less(const HoltWithTimeFillGaps & other, [[maybe_unused]] double alpha, [[maybe_unused]] double beta) const
     {
         uint64_t max_time = std::max(timestamp, other.timestamp);
