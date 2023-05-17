@@ -112,16 +112,17 @@ struct ExponentiallySmoothedAverage
     }
 };
 
+/// Type of HoltWintersAlgorithm.
 enum HoltWintersType {
     Multiply,
     Additional
 };
 
-/// Helper struct contains functions for all Counters 
+/// Helper struct contains functions for all Counters.
 struct DataHelper
 {
-    /// equivalent of pow(value, count).
-    /// using binary power for better precision
+    /// Equivalent of pow(value, count).
+    /// Using binary power for better precision.
     static inline double scale(double value, uint64_t count)
     {
         double result = 1;
@@ -137,42 +138,42 @@ struct DataHelper
         return result;
     }
 
-    /// equivalent of pow(1 - value, count).
-    /// using binary power for better precision
+    /// Equivalent of pow(1 - value, count).
+    /// Using binary power for better precision.
     static inline double scale_one_minus_value(double value, uint64_t count)
     {
         return scale(1 - value, count);
     }
 
-    /// optional value to store value with timestamp
+    /// Optional value to store value with timestamp.
     using optional_timestamped_value = std::optional<std::pair<double, uint64_t>>;
 
-    /// create optional_timestamped_value with given value and timestamp
+    /// Create optional_timestamped_value with given value and timestamp.
     static optional_timestamped_value make_optional_timestamped_value(double value, uint64_t timestamp)
     {
         return optional_timestamped_value(std::make_pair(value, timestamp));
     }
 
-    /// create empty optional_timestamped_value
+    /// Create empty optional_timestamped_value.
     static optional_timestamped_value make_optional_timestamped_value()
     {
         return optional_timestamped_value();
     }
 
-    /// get value from optional_timestamped_value or 0 if not exists
+    /// Get value from optional_timestamped_value or 0 if not exists.
     static double get_value(const optional_timestamped_value & o)
     {
         return o.has_value() ? o->first : 0;
     }
 
-    /// get timestamp from optional_timestamped_value or 0 if not exists
+    /// Get timestamp from optional_timestamped_value or 0 if not exists.
     static uint64_t get_timestamp(const optional_timestamped_value & o)
     {
         return o.has_value() ? o->second : 0;
     }
 
-    /// get minimum by timestamps if not equal
-    /// otherwise get sum of values with timestamp
+    /// Get minimum by timestamps if not equal.
+    /// Otherwise get sum of values with timestamp.
     static optional_timestamped_value min_or_merge(const optional_timestamped_value & a, const optional_timestamped_value & b)
     {
         if (!a.has_value() || !b.has_value())
@@ -186,8 +187,8 @@ struct DataHelper
         return get_timestamp(a) < get_timestamp(b) ? a : b;
     }
 
-    /// get maximum by timestamps if not equal
-    /// otherwise get empty optional_timestamped_value
+    /// Get maximum by timestamps if not equal.
+    /// Otherwise get empty optional_timestamped_value.
     static optional_timestamped_value max_or_empty(const optional_timestamped_value & a, const optional_timestamped_value & b)
     {
         if (!a.has_value() || !b.has_value())
@@ -201,36 +202,58 @@ struct DataHelper
         return get_timestamp(a) > get_timestamp(b) ? a : b;
     }
 
+    /// Type for one season value.
     using season_t = std::optional<double>;
+    /// Type for seasons vector.
     using season_v_t = std::vector<season_t>;
+    /// Type for contain many seasons.
     using seasons_t = std::optional<season_v_t>;
 
-    static const inline double default_multiply_value = 1;
-    static const inline double default_additional_value = 0; 
+    /// Default value using if no season value.
+    template<HoltWintersType type>
+    static inline double default_value()
+    {
+        if constexpr (type == HoltWintersType::Multiply)
+        {
+            return 1;
+        }
+        else
+        {
+            return 0;
+        }
+    }
 
+    /// Normalize id by seasons size.
+    /// Works only with size not equal 0.
     static uint64_t normalId(uint64_t id, uint64_t size)
     {
+        if (size == 0)
+        {
+            throw std::logic_error("can't normailId with seasons size = 0");
+        }
         id %= size;
         return id;
     }
 
+    /// Get season from storage by id. 
     template<HoltWintersType type>
     static double getSeason(const seasons_t & seasons, uint64_t id)
     {
-        double default_value = default_additional_value;
-        if constexpr (type == HoltWintersType::Multiply)
-        {
-            default_value = default_multiply_value;
-        }
-        if (!seasons.has_value()) return default_value;
-        if (seasons->size() == 0) return default_value;
+        if (!seasons.has_value()) return default_value<type>();
+        if (seasons->size() == 0) return default_value<type>();
         id = normalId(id, seasons->size());
-        if (!seasons->operator[](id).has_value()) return default_value;
+        if (!seasons->operator[](id).has_value()) return default_value<type>();
         return seasons->operator[](id).value();
     }
 
+    /// Set season to storage by id and seasons_count.
+    /// Works only with seasons_count not equal 0.
     static void setSeason(seasons_t & seasons, uint64_t seasons_count, uint64_t id, double new_value)
     {
+        if (seasons_count == 0)
+        {
+            throw std::logic_error("can't set season for seasons_count = 0");
+        }
         if(!seasons.has_value())
         {
             seasons = initSeasons(seasons_count);
@@ -239,18 +262,26 @@ struct DataHelper
         seasons->operator[](id) = new_value;
     }
 
+    /// Set season to copy of given storage by id and seasons_count.
+    /// Works only with seasons_count not equal 0.
     static seasons_t setSeason(const seasons_t & seasons, uint64_t seasons_count, uint64_t id, double new_value)
     {
+        if (seasons_count == 0)
+        {
+            throw std::logic_error("can't set season for seasons_count = 0");
+        }
         seasons_t result = seasons;
         setSeason(result, seasons_count, id, new_value);
         return result;
     }
 
+    /// Create storage for size seasons.
     static seasons_t initSeasons(uint64_t size)
     {
         return seasons_t(season_v_t(size));
     }
 
+    /// Merge two given seasons by summation.
     template<HoltWintersType type>
     static seasons_t mergeSeasons(const seasons_t & a, const seasons_t & b)
     {
@@ -270,6 +301,7 @@ struct DataHelper
         return result;
     }
 
+    /// Scale given season by multiply.
     template<HoltWintersType type>
     static seasons_t scaleSeasons(const seasons_t & a, double multiply)
     {
@@ -780,7 +812,7 @@ struct Holt : DataHelper
   * Holt algorithm value is predict of next one value based on given values.
   * It's using trend of data and exponentially smoothed averaged on it.
   * In this class timestamps exist, so time is biggest timestamp minus value timestamp.
-  * Skipped values ignored
+  * Skipped values ignore
   */
 struct HoltWithTime : DataHelper
 {
@@ -942,7 +974,7 @@ struct HoltWithTime : DataHelper
         return trend;
     }
 
-    /// Compare two counters (by moving to the same count and comparing predictions).
+    /// Compare two counters (by moving to the same timestamp and comparing predictions).
     /// You can store the counters in container and sort it without changing the stored values over time.
     bool less(const HoltWithTime & other, [[maybe_unused]] double alpha, [[maybe_unused]] double beta) const
     {
@@ -1122,14 +1154,29 @@ struct HoltWithTimeFillGaps : DataHelper
     }
 };
 
+/** https://en.wikipedia.org/wiki/Exponential_smoothing#Triple_exponential_smoothing_(Holt_Winters)
+  *
+  * Holt Winters algorithm value is predict of next one value based on given values.
+  * It's using global trend, seasons trend and exponentially smoothed averaged on data.
+  * In this class it's no timestamps, so time is count values added after.
+  * It's template parameter: type - it's the type of Holt Winters algorithm (Multiply / Additional).
+  */
 template<HoltWintersType type>
 struct HoltWinters : DataHelper
 {
+    /// The sum. It contains added values scaled accordingly count of added after value and trend.
+
     double value = 0;
+
+    /// The trend. It contains calculated trends scaled accordingly count of added after trend.
 
     double trend = 0;
 
+    /// The seasons. Using to calculate algorithm transition.
+
     seasons_t seasons;
+
+    /// Count of added values. Using to calculate algorithm transition.
 
     uint64_t count = 0;
 
@@ -1145,6 +1192,8 @@ struct HoltWinters : DataHelper
     {
     }
 
+    /// Obtain the same counter with bigger count.
+    /// Works only for given count >= count.
     HoltWinters<type> remap(uint64_t current_count, double alpha, double beta, double gamma, [[maybe_unused]] uint32_t seasons_count) const
     {
         if (current_count < count)
@@ -1159,11 +1208,13 @@ struct HoltWinters : DataHelper
         ));
     }
 
+    /// Merge two counters. Add b counter to begin of a counter.
+    /// Works only for b counter contains no more than 1 value.
     static HoltWinters<type> merge(const HoltWinters<type> & a, const HoltWinters<type> & b, double alpha, double beta, double gamma, uint32_t seasons_count)
     {
-        if (!a.count || !b.count)
+        if (a.count == 0 || b.count == 0)
         {
-            return a.count ? a : b;
+            return a.count == 0 ? b : a;
         }
         if (b.count == 1) // careful addition of one element
         {
@@ -1218,16 +1269,20 @@ struct HoltWinters : DataHelper
         throw std::logic_error("Can't merge with counter with count > 1");
     }
 
+    /// Merge this counter with other one.
     void merge(const HoltWinters<type> & other, double alpha, double beta, double gamma, uint32_t seasons_count)
     {
         *this = std::move(merge(*this, other, alpha, beta, gamma, seasons_count));
     }
 
+    /// Add new one value.
     void add(double new_value, double alpha, double beta, double gamma, uint32_t seasons_count)
     {
         merge(HoltWinters<type>(new_value), alpha, beta, gamma, seasons_count);
     }
 
+    /// Get predict of value at the given count.
+    /// Works only with given count >= count.
     double get(uint64_t current_count, [[maybe_unused]] double alpha, [[maybe_unused]] double beta, [[maybe_unused]] double gamma, [[maybe_unused]] uint32_t seasons_count) const
     {
         if (current_count < count)
@@ -1244,6 +1299,7 @@ struct HoltWinters : DataHelper
         }
     }
 
+    /// Get current predict of value.
     double get([[maybe_unused]] double alpha, [[maybe_unused]] double beta, [[maybe_unused]] double gamma, [[maybe_unused]] uint32_t seasons_count) const
     {
         if constexpr (type == HoltWintersType::Multiply)
@@ -1256,16 +1312,19 @@ struct HoltWinters : DataHelper
         }
     }
 
+    /// Get current trend.
     double get_trend([[maybe_unused]] double alpha, [[maybe_unused]] double beta, [[maybe_unused]] double gamma, [[maybe_unused]] uint32_t seasons_count) const
     {
         return trend;
     }
 
+    /// Get current season trend by id.
     double get_season(uint32_t id, [[maybe_unused]] double alpha, [[maybe_unused]] double beta, [[maybe_unused]] double gamma, [[maybe_unused]] uint32_t seasons_count) const
     {
         return DataHelper::getSeason<type>(seasons, id);
     }
 
+    /// Get current seasons
     std::vector<double> get_seasons([[maybe_unused]] double alpha, [[maybe_unused]] double beta, [[maybe_unused]] double gamma, uint32_t seasons_count) const
     {
         std::vector<double> result(seasons_count);
@@ -1276,6 +1335,8 @@ struct HoltWinters : DataHelper
         return result;
     }
 
+    /// Compare two counters (by moving to the same count and comparing predictions).
+    /// You can store the counters in container and sort it without changing the stored values over time.
     bool less(const HoltWinters<type> & other, [[maybe_unused]] double alpha, [[maybe_unused]] double beta, [[maybe_unused]] double gamma, [[maybe_unused]] uint32_t seasons_count) const
     {
         uint64_t max_count = std::max(count, other.count);
@@ -1283,33 +1344,57 @@ struct HoltWinters : DataHelper
     }
 };
 
+/** https://en.wikipedia.org/wiki/Exponential_smoothing#Triple_exponential_smoothing_(Holt_Winters)
+  *
+  * Holt Winters algorithm value is predict of next one value based on given values.
+  * It's using global trend, seasons trend and exponentially smoothed averaged on data.
+  * In this class timestamps exists, so time is biggest timestamp minus value timestamp.
+  * Skipped values ignore.
+  * It's template parameter: type - it's the type of Holt Winters algorithm (Multiply / Additional).
+  */
 template<HoltWintersType type>
 struct HoltWintersWithTime : DataHelper
 {
+    /// The sum. It contains added values scaled accordingly time elapsed after them.
+
     double value = 0;
+
+    /// The trend. It contains calculated trends scaled accordingly count of added after trend.
 
     double trend = 0;
 
+    /// The seasons. Using to calculate algorithm transition.
+
     seasons_t seasons;
+
+    /// Current timestamp. Using in calculating alpgorithm transition.
 
     uint64_t timestamp = 0;
 
-    ovt first_value;
+    /// First value added to this counter.
+    /// Using for avoid multiplying first added value by alpha. 
 
-    ovt first_trend;
+    optional_timestamped_value first_value;
+
+    /// First trend happened in this counter.
+    /// Using for avoid multiplying first happened trend by beta. 
+
+    optional_timestamped_value first_trend;
 
     HoltWintersWithTime() = default;
 
     HoltWintersWithTime(double current_value, uint64_t current_timestamp)
-        : value(current_value), timestamp(current_timestamp), first_value(current_value, current_timestamp)
+        : value(current_value), timestamp(current_timestamp), first_value(make_optional_timestamped_value(current_value, current_timestamp))
     {
     }
 
-    HoltWintersWithTime(double current_value, double current_trend, seasons_t current_seasons, uint64_t current_timestamp, ovt first_value_, ovt first_trend_)
+    HoltWintersWithTime(double current_value, double current_trend, seasons_t current_seasons, uint64_t current_timestamp, optional_timestamped_value first_value_, optional_timestamped_value first_trend_)
         : value(current_value), trend(current_trend), seasons(std::move(current_seasons)), timestamp(current_timestamp), first_value(first_value_), first_trend(first_trend_)
     {
     }
 
+    /// Obtain the same counter in another point of time.
+    /// Works only for current_time >= timestamp.
     HoltWintersWithTime<type> remap(uint64_t current_time, double alpha, double beta, double gamma, [[maybe_unused]] uint32_t seasons_count) const
     {
         if (current_time < timestamp)
@@ -1326,15 +1411,18 @@ struct HoltWintersWithTime : DataHelper
         );
     }
 
+    /// Merge two counters. Two trends can't be merged, so it can merge two counters if one of next:
+    ///  - one of given counters is empty
+    ///  - b has no trend (equivalent of b is empty or all timestamps in b are equal)
     static HoltWintersWithTime<type> merge(const HoltWintersWithTime<type> & a, const HoltWintersWithTime<type> & b, double alpha, double beta, double gamma, uint32_t seasons_count)
     {
-        if (!a.first_value.was || !b.first_value.was)
+        if (!a.first_value.has_value() || !b.first_value.has_value())
         {
-            return a.first_value.was ? a : b;
+            return a.first_value.has_value() ? a : b;
         }
-        if (!b.first_trend.was)
+        if (!b.first_trend.has_value())
         {
-            if (!a.first_trend.was)
+            if (!a.first_trend.has_value())
             {
                 if (a.timestamp == b.timestamp)
                 {
@@ -1345,12 +1433,12 @@ struct HoltWintersWithTime : DataHelper
                 }
                 else
                 {
-                    ovt max_value = ovt::max_or_empty(a.first_value, b.first_value);
-                    ovt min_value = ovt::min_or_merge(a.first_value, b.first_value);
-                    auto remapped_a = std::move(a.remap(max_value.timestamp, alpha, beta, gamma, seasons_count));
-                    auto remapped_b = std::move(b.remap(max_value.timestamp, alpha, beta, gamma, seasons_count));
-                    double trend = (max_value.value - min_value.value) / (max_value.timestamp - min_value.timestamp);
-                    uint64_t diff_time = max_value.timestamp - min_value.timestamp;
+                    optional_timestamped_value max_value = max_or_empty(a.first_value, b.first_value);
+                    optional_timestamped_value min_value = min_or_merge(a.first_value, b.first_value);
+                    auto remapped_a = std::move(a.remap(get_timestamp(max_value), alpha, beta, gamma, seasons_count));
+                    auto remapped_b = std::move(b.remap(get_timestamp(max_value), alpha, beta, gamma, seasons_count));
+                    double trend = (get_value(max_value) - get_value(min_value)) / (get_timestamp(max_value) - get_timestamp(min_value));
+                    uint64_t diff_time = get_timestamp(max_value) - get_timestamp(min_value);
                     double new_seasons;
                     if constexpr (type == HoltWintersType::Multiply)
                     {
@@ -1371,12 +1459,12 @@ struct HoltWintersWithTime : DataHelper
                     }
                     return HoltWintersWithTime<type>(
                         remapped_a.value + remapped_b.value
-                            - max_value.value * (1 - alpha),
+                            - get_value(max_value) * (1 - alpha),
                         trend,
                         std::move(seasons),
-                        max_value.timestamp,
+                        get_timestamp(max_value),
                         min_value,
-                        ovt(trend, max_value.timestamp)
+                        make_optional_timestamped_value(trend, get_timestamp(max_value))
                     );
                 }
             }
@@ -1385,33 +1473,37 @@ struct HoltWintersWithTime : DataHelper
                 uint64_t max_time = std::max(a.timestamp, b.timestamp);
                 auto remapped_a = std::move(a.remap(max_time, alpha, beta, gamma, seasons_count));
                 auto remapped_b = std::move(b.remap(max_time, alpha, beta, gamma, seasons_count));
-                ovt excess_value = ovt::max_or_empty(a.first_value, b.first_value);
-                ovt excess_trend = ovt::max_or_empty(a.first_trend, b.first_trend);
+                optional_timestamped_value excess_value = max_or_empty(a.first_value, b.first_value);
+                optional_timestamped_value excess_trend = max_or_empty(a.first_trend, b.first_trend);
                 return HoltWintersWithTime<type>(
                     remapped_a.value + remapped_b.value
-                        - excess_value.value * scale_one_minus_value(alpha, max_time - excess_value.timestamp) * (1 - alpha),
+                        - get_value(excess_value) * scale_one_minus_value(alpha, max_time - get_timestamp(excess_value)) * (1 - alpha),
                     remapped_a.trend + remapped_b.trend
-                        - excess_trend.value * scale_one_minus_value(beta, max_time - excess_trend.timestamp) * (1 - beta),
+                        - get_value(excess_trend) * scale_one_minus_value(beta, max_time - get_timestamp(excess_trend)) * (1 - beta),
                     std::move(DataHelper::mergeSeasons<type>(remapped_a.seasons, remapped_b.seasons)),
                     max_time,
-                    ovt::min_or_merge(a.first_value, b.first_value),
-                    ovt::min_or_merge(a.first_trend, b.first_trend)
+                    min_or_merge(a.first_value, b.first_value),
+                    min_or_merge(a.first_trend, b.first_trend)
                 );
             }
         }
         throw std::logic_error("Can't merge with counter with count > 1");
     }
 
+    /// Merge this counter with other one.
     void merge(const HoltWintersWithTime<type> & other, double alpha, double beta, double gamma, uint32_t seasons_count)
     {
         *this = merge(*this, other, alpha, beta, gamma, seasons_count);
     }
 
+    /// Add new one value.
     void add(double new_value, uint64_t new_timestamp, double alpha, double beta, double gamma, uint32_t seasons_count)
     {
         merge(HoltWintersWithTime<type>(new_value, new_timestamp), alpha, beta, gamma, seasons_count);
     }
 
+    /// Get predict of value at the given count.
+    /// Works only with given count >= count.
     double get(uint64_t current_time, [[maybe_unused]] double alpha, [[maybe_unused]] double beta, [[maybe_unused]] double gamma, [[maybe_unused]] uint32_t seasons_count) const
     {
         if (current_time < timestamp)
@@ -1428,6 +1520,7 @@ struct HoltWintersWithTime : DataHelper
         }
     }
 
+    /// Get current predict of value.
     double get([[maybe_unused]] double alpha, [[maybe_unused]] double beta, [[maybe_unused]] double gamma, uint32_t seasons_count) const
     {
         if constexpr (type == HoltWintersType::Multiply)
@@ -1440,16 +1533,19 @@ struct HoltWintersWithTime : DataHelper
         }
     }
 
+    /// Get current trend.
     double get_trend([[maybe_unused]] double alpha, [[maybe_unused]] double beta, [[maybe_unused]] double gamma, [[maybe_unused]] uint32_t seasons_count) const
     {
         return trend;
     }
 
+    /// Get current season trend by id.
     double get_season(uint32_t id, [[maybe_unused]] double alpha, [[maybe_unused]] double beta, [[maybe_unused]] double gamma, [[maybe_unused]] uint32_t seasons_count) const
     {
         return DataHelper::getSeason<type>(seasons, id);
     }
 
+    /// Get current seasons
     std::vector<double> get_seasons([[maybe_unused]] double alpha, [[maybe_unused]] double beta, [[maybe_unused]] double gamma, uint32_t seasons_count) const
     {
         std::vector<double> result(seasons_count);
@@ -1460,6 +1556,8 @@ struct HoltWintersWithTime : DataHelper
         return result;
     }
 
+    /// Compare two counters (by moving to the same timestamp and comparing predictions).
+    /// You can store the counters in container and sort it without changing the stored values over time.
     bool less(const HoltWintersWithTime<type> & other, [[maybe_unused]] double alpha, [[maybe_unused]] double beta, [[maybe_unused]] double gamma, [[maybe_unused]] uint32_t seasons_count) const
     {
         uint64_t max_time = std::max(timestamp, other.timestamp);
@@ -1467,17 +1565,35 @@ struct HoltWintersWithTime : DataHelper
     }
 };
 
+/** https://en.wikipedia.org/wiki/Exponential_smoothing#Triple_exponential_smoothing_(Holt_Winters)
+  *
+  * Holt Winters algorithm value is predict of next one value based on given values.
+  * It's using global trend, seasons trend and exponentially smoothed averaged on data.
+  * In this class timestamps exists, so time is biggest timestamp minus value timestamp.
+  * Skipped values fill by prediction.
+  * It's template parameter: type - it's the type of Holt Winters algorithm (Multiply / Additional).
+  */
 template<HoltWintersType type>
 struct HoltWintersWithTimeFillGaps : DataHelper
 {
+    /// The sum. It contains added values scaled accordingly count of added after value and trend.
+
     double value = 0;
+
+    /// The trend. It contains calculated trends scaled accordingly count of added after trend.
 
     double trend = 0;
 
+    /// The seasons. Using to calculate algorithm transition.
+
     seasons_t seasons;
+
+    /// Current timestamp. Using to calculate algorith transition.
 
     uint64_t timestamp = 0;
     
+    /// Count of added values. Using to calculate algorithm transition.
+
     uint64_t count = 0;
 
     HoltWintersWithTimeFillGaps() = default;
@@ -1492,22 +1608,32 @@ struct HoltWintersWithTimeFillGaps : DataHelper
     {
     }
 
+    /// Obtain the same counter in another point of time.
+    /// Works only for current_time >= timestamp.
     HoltWintersWithTimeFillGaps<type> remap(uint64_t current_time, double alpha, double beta, double gamma, [[maybe_unused]] uint32_t seasons_count) const
     {
-        return std::move(HoltWintersWithTimeFillGaps<type>(
+        if (current_time < timestamp)
+        {
+            throw std::logic_error("can't remap for value less than timestamp");
+        }
+        return HoltWintersWithTimeFillGaps<type>(
             value * scale_one_minus_value(alpha, current_time - timestamp),
             trend * scale_one_minus_value(beta, current_time - timestamp),
             std::move(scaleSeasons<type>(seasons, scale_one_minus_value(gamma, current_time - timestamp))),
             current_time,
             count
-        ));
+        );
     }
 
+    /// Merge two counters.
+    /// This class don't ignore gaps, so it can merge two counters if one of next conditions:
+    ///  - one of given counters is empty
+    ///  - b counter contains one value with timestamp greater than timestamp of a.
     static HoltWintersWithTimeFillGaps<type> merge(const HoltWintersWithTimeFillGaps<type> & a, const HoltWintersWithTimeFillGaps<type> & b, double alpha, double beta, double gamma, uint32_t seasons_count)
     {
-        if (!a.count || !b.count)
+        if (a.count == 0 || b.count == 0)
         {
-            return a.count ? a : b;
+            return a.count == 0 ? b : a;
         }
         if (b.count == 1)
         {
@@ -1565,21 +1691,42 @@ struct HoltWintersWithTimeFillGaps : DataHelper
         throw std::logic_error("Can't merge with counter with count > 1");
     }
 
+    /// Merge this counter with other one.
     void merge(const HoltWintersWithTimeFillGaps<type> & other, double alpha, double beta, double gamma, uint32_t seasons_count)
     {
         *this = merge(*this, other, alpha, beta, gamma, seasons_count);
     }
 
-    void add(double new_value, uint64_t new_timestamp, double alpha, double beta, double gamma, uint32_t seasons_count)
+    /// Add new value.
+    /// Works only if counter is empty or new time > timestamp. 
+    void add(double new_value, uint64_t new_time, double alpha, double beta, double gamma, uint32_t seasons_count)
     {
-        merge(HoltWintersWithTimeFillGaps<type>(new_value, new_timestamp), alpha, beta, gamma, seasons_count);
+        if (count > 0 && new_time <= timestamp)
+        {
+            throw std::logic_error("can't add new_value with new_time less or equal than counter timestamp");
+        }
+        merge(HoltWintersWithTimeFillGaps<type>(new_value, new_time), alpha, beta, gamma, seasons_count);
     }
 
+    /// Add predicted value.
+    /// Works only if counter is not empty and timestamp can be increased.
     void add_predict(double alpha, double beta, double gamma, uint32_t seasons_count)
     {
-        add(get(alpha, beta, gamma, seasons_count), timestamp + 1, alpha, beta, gamma, seasons_count);
+        if (count == 0)
+        {
+            throw std::logic_error("can't add_predict in empty counter");
+        }
+        uint64_t new_time = timestamp + 1;
+        if (new_time < timestamp) // check timestamp overflowed
+        {
+            throw std::logic_error("can't add_predict in counter because of timestamp overflow");
+        }
+        add(get(alpha, beta, gamma, seasons_count), new_time, alpha, beta, gamma, seasons_count);
     }
 
+    /// Add predicted value until new timestamp will less current_time.
+    /// Main idea of usage: prepare counter to add value with current_time.
+    /// Works only with current_time > timestamp
     HoltWintersWithTimeFillGaps<type> predict_until(uint64_t current_time, double alpha, double beta, double gamma, uint32_t seasons_count) const
     {
         if (current_time <= timestamp)
@@ -1591,9 +1738,11 @@ struct HoltWintersWithTimeFillGaps : DataHelper
         {
             copy_of_me.add_predict(alpha, beta, gamma, seasons_count);
         }
-        return std::move(copy_of_me);
+        return copy_of_me;
     }
 
+    /// Get predict of value at the given count.
+    /// Works only with current_time >= timestamp.
     double get(uint64_t current_time, [[maybe_unused]] double alpha, [[maybe_unused]] double beta, [[maybe_unused]] double gamma, [[maybe_unused]] uint32_t seasons_count) const
     {
         if (current_time < timestamp)
@@ -1610,6 +1759,7 @@ struct HoltWintersWithTimeFillGaps : DataHelper
         }
     }
 
+    /// Get current predict of value.
     double get([[maybe_unused]] double alpha, [[maybe_unused]] double beta, [[maybe_unused]] double gamma, uint32_t seasons_count) const
     {
         if constexpr (type == HoltWintersType::Multiply)
@@ -1622,16 +1772,19 @@ struct HoltWintersWithTimeFillGaps : DataHelper
         }
     }
 
+    /// Get current trend.
     double get_trend([[maybe_unused]] double alpha, [[maybe_unused]] double beta, [[maybe_unused]] double gamma, [[maybe_unused]] uint32_t seasons_count) const
     {
         return trend;
     }
 
+    /// Get current season trend by id.
     double get_season(uint32_t id, [[maybe_unused]] double alpha, [[maybe_unused]] double beta, [[maybe_unused]] double gamma, [[maybe_unused]] uint32_t seasons_count) const
     {
         return DataHelper::getSeason<type>(seasons, id);
     }
 
+    /// Get current seasons
     std::vector<double> get_seasons([[maybe_unused]] double alpha, [[maybe_unused]] double beta, [[maybe_unused]] double gamma, uint32_t seasons_count) const
     {
         std::vector<double> result(seasons_count);
@@ -1642,6 +1795,8 @@ struct HoltWintersWithTimeFillGaps : DataHelper
         return result;
     }
 
+    /// Compare two counters (by moving to the same count and comparing predictions).
+    /// You can store the counters in container and sort it without changing the stored values over time.
     bool less(const HoltWintersWithTimeFillGaps<type> & other,[[maybe_unused]] double alpha, [[maybe_unused]] double beta, [[maybe_unused]] double gamma, [[maybe_unused]] uint32_t seasons_count) const
     {
         uint64_t max_time = std::max(timestamp, other.timestamp);
