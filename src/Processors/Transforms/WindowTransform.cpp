@@ -13,6 +13,7 @@
 #include <Columns/ColumnAggregateFunction.h>
 #include <DataTypes/DataTypesNumber.h>
 #include <DataTypes/DataTypeTuple.h>
+#include <DataTypes/DataTypeArray.h>
 #include <DataTypes/getLeastSupertype.h>
 #include <DataTypes/DataTypeLowCardinality.h>
 #include <DataTypes/DataTypeInterval.h>
@@ -1571,6 +1572,21 @@ namespace recurrent_detail
         return true;
     }
 
+    template<> bool setTupleToOutputColumnWithIndex<std::vector<Float64>>(const WindowTransform * transform, size_t function_index, size_t index, const std::vector<Float64> & value)
+    {
+        auto current_row = transform->current_row;
+        const auto & current_block = transform->blockAt(current_row);
+        IColumn & to = *current_block.output_columns[function_index];
+        ColumnTuple & to_tuple = assert_cast<ColumnTuple &>(to);
+        ColumnArray & to_array = assert_cast<ColumnArray &>(to_tuple.getColumn(index));
+        for (const Float64 & i : value)
+        {
+            assert_cast<ColumnFloat64 &>(to_array.getData()).getData().push_back(i);
+        }
+        to_array.getOffsets().push_back(to_array.getOffsets().back() + value.size());
+        return true;
+    }
+
     template<size_t index, typename T, typename... Args> bool setTupleToOutputColumn(const WindowTransform * transform, size_t function_index, const T & value, Args... args)
     {
         if constexpr (sizeof...(Args) == 0)
@@ -2281,6 +2297,169 @@ struct WindowFunctionHolt : public StatefulWindowFunction<State>
         Float64 beta;
 };
 
+template<typename State, TSAversion version>
+struct WindowFunctionHoltWinters : public StatefulWindowFunction<State>
+{
+    static constexpr size_t ARGUMENT_VALUE = 0;
+    static constexpr size_t ARGUMENT_TIME = 1;
+
+    WindowFunctionHoltWinters(const std::string & name_,
+            const DataTypes & argument_types_, const Array & parameters_)
+        : StatefulWindowFunction<State>(name_, argument_types_, parameters_, createResultType())
+    {
+        if (parameters_.size() != 4)
+        {
+            throw Exception(ErrorCodes::BAD_ARGUMENTS,
+                "Function {} takes exactly four parameters: alpha, beta, gamma, seasons_count", this->getName());
+        }
+        alpha = applyVisitor(FieldVisitorConvertToNumber<Float64>(), parameters_[0]);
+        beta = applyVisitor(FieldVisitorConvertToNumber<Float64>(), parameters_[1]);
+        gamma = applyVisitor(FieldVisitorConvertToNumber<Float64>(), parameters_[2]);
+        seasons_count = applyVisitor(FieldVisitorConvertToNumber<UInt32>(), parameters_[3]);
+
+        if (alpha < 0)
+        {
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Aggregate function {} requires non negative alpha, got {}", 
+                this->getName(), alpha);
+        }
+        if (alpha > 1)
+        {
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Aggregate function {} requires alpha not greater one, got {}",
+                this->getName(), alpha);
+        }
+        if (beta < 0)
+        {
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Aggregate function {} requires non negative beta, got {}", 
+                this->getName(), beta);
+        }
+        if (beta > 1)
+        {
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Aggregate function {} requires beta not greater one, got {}",
+                this->getName(), beta);
+        }
+        if (gamma < 0)
+        {
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Aggregate function {} requires non negative gamma, got {}", 
+                this->getName(), gamma);
+        }
+        if (gamma > 1)
+        {
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Aggregate function {} requires gamma not greater one, got {}",
+                this->getName(), gamma);
+        }
+        if (seasons_count == 0)
+        {
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Aggregate function {} requires positive seasons_count, got {}",
+                this->getName(), seasons_count);
+        }
+
+        if constexpr (version == TSAversion::WithTimeColumn)
+        {
+            if (argument_types_.size() != 2)
+            {
+                throw Exception(ErrorCodes::BAD_ARGUMENTS,
+                    "Function {} takes exactly two arguments", this->getName());
+            }
+        }
+        else
+        {
+            if (argument_types_.size() != 1)
+            {
+                throw Exception(ErrorCodes::BAD_ARGUMENTS,
+                    "Function {} takes exactly one argument", this->getName());
+            }
+        }
+
+        if (!isNumber(argument_types_[ARGUMENT_VALUE]))
+        {
+            throw Exception(ErrorCodes::BAD_ARGUMENTS,
+                "Argument {} must be a number, '{}' given",
+                ARGUMENT_VALUE,
+                argument_types_[ARGUMENT_VALUE]->getName());
+        }
+        
+        if constexpr (version == TSAversion::WithTimeColumn)
+        {
+            if (!isNativeUnsignedInteger(argument_types_[ARGUMENT_TIME]))
+            {
+                throw Exception(ErrorCodes::BAD_ARGUMENTS,
+                    "Argument {} must be a unsigned integer, '{}' given",
+                    ARGUMENT_TIME,
+                    argument_types_[ARGUMENT_TIME]->getName());
+            }
+        }
+    }
+    
+    static DataTypePtr createResultType()
+    {
+        DataTypes types
+        {
+            std::make_shared<DataTypeNumber<Float64>>(),
+            std::make_shared<DataTypeNumber<Float64>>(),
+            std::make_shared<DataTypeArray>(std::make_shared<DataTypeNumber<Float64>>())
+        };
+        return std::make_shared<DataTypeTuple>(std::move(types));
+    }
+
+    bool allocatesMemoryInArena() const override { return false; }
+
+    void windowInsertResultInto(const WindowTransform * transform,
+        size_t function_index) override
+    {
+        const auto & workspace = transform->workspaces[function_index];
+        auto & state = this->getState(workspace);
+
+        auto start = transform->frame_start;
+
+        // we can continue previous state.
+        // only if same start, because we can't remove/add to begin.
+        // only with greater end, because we can't remove from end.
+        if (transform->prev_frame_start == transform->frame_start
+            && transform->prev_frame_end <= transform->frame_end)
+        {
+            start = transform->prev_frame_end;
+        }
+        else // otherwise - clear state and start from begin
+        {
+            state = State();
+        }
+
+        for (RowNumber i = start; i < transform->frame_end; transform->advanceRowNumber(i))
+        {
+            Float64 new_value = WindowFunctionHelpers::getValue<Float64>(transform, function_index, ARGUMENT_VALUE, i);
+            try
+            {
+                if constexpr (version == TSAversion::WithTimeColumn)
+                {
+                    UInt64 new_time = WindowFunctionHelpers::getValue<UInt64>(transform, function_index, ARGUMENT_TIME, i);
+                    state.add(new_value, new_time, alpha, beta, gamma, seasons_count);
+                }
+                else
+                {
+                    state.add(new_value, alpha, beta, gamma, seasons_count);
+                }
+            }
+            catch (const std::logic_error & e)
+            {
+                throw Exception(ErrorCodes::INCORRECT_DATA,
+                    "Incorrect data given to aggregate function {}, {}",
+                    this->getName(),
+                    e.what()
+                );
+            }
+        }
+
+        WindowFunctionHelpers::setTupleToOutputColumn<Float64, Float64, std::vector<Float64>>(transform, function_index,
+            state.get(alpha, beta, gamma, seasons_count), state.get_trend(alpha, beta, gamma, seasons_count), state.get_seasons(alpha, beta, gamma, seasons_count));
+    }
+    
+    private:
+        Float64 alpha;
+        Float64 beta;
+        Float64 gamma;
+        UInt32 seasons_count;
+};
+
 struct WindowFunctionRowNumber final : public WindowFunction
 {
     WindowFunctionRowNumber(const std::string & name_,
@@ -2904,6 +3083,48 @@ void registerWindowFunctions(AggregateFunctionFactory & factory)
             const DataTypes & argument_types, const Array & parameters, const Settings *)
         {
             return std::make_shared<WindowFunctionHolt<HoltWithTimeFillGaps, TSAversion::WithTimeColumn>>(
+                name, argument_types, parameters);
+        }, properties});
+
+    factory.registerFunction("HoltWintersMultiply", {[](const std::string & name,
+            const DataTypes & argument_types, const Array & parameters, const Settings *)
+        {
+            return std::make_shared<WindowFunctionHoltWinters<HoltWinters<HoltWintersType::Multiply>, TSAversion::WithoutTimeColumn>>(
+                name, argument_types, parameters);
+        }, properties});
+
+    factory.registerFunction("HoltWintersMultiplyWithTime", {[](const std::string & name,
+            const DataTypes & argument_types, const Array & parameters, const Settings *)
+        {
+            return std::make_shared<WindowFunctionHoltWinters<HoltWintersWithTime<HoltWintersType::Multiply>, TSAversion::WithTimeColumn>>(
+                name, argument_types, parameters);
+        }, properties});
+    
+    factory.registerFunction("HoltWintersMultiplyWithTimeFillGaps", {[](const std::string & name,
+            const DataTypes & argument_types, const Array & parameters, const Settings *)
+        {
+            return std::make_shared<WindowFunctionHoltWinters<HoltWintersWithTimeFillGaps<HoltWintersType::Multiply>, TSAversion::WithTimeColumn>>(
+                name, argument_types, parameters);
+        }, properties});
+
+    factory.registerFunction("HoltWintersAdditional", {[](const std::string & name,
+            const DataTypes & argument_types, const Array & parameters, const Settings *)
+        {
+            return std::make_shared<WindowFunctionHoltWinters<HoltWinters<HoltWintersType::Additional>, TSAversion::WithoutTimeColumn>>(
+                name, argument_types, parameters);
+        }, properties});
+
+    factory.registerFunction("HoltWintersAdditionalWithTime", {[](const std::string & name,
+            const DataTypes & argument_types, const Array & parameters, const Settings *)
+        {
+            return std::make_shared<WindowFunctionHoltWinters<HoltWintersWithTime<HoltWintersType::Additional>, TSAversion::WithTimeColumn>>(
+                name, argument_types, parameters);
+        }, properties});
+    
+    factory.registerFunction("HoltWintersAdditionalWithTimeFillGaps", {[](const std::string & name,
+            const DataTypes & argument_types, const Array & parameters, const Settings *)
+        {
+            return std::make_shared<WindowFunctionHoltWinters<HoltWintersWithTimeFillGaps<HoltWintersType::Additional>, TSAversion::WithTimeColumn>>(
                 name, argument_types, parameters);
         }, properties});
 
